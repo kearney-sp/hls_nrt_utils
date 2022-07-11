@@ -9,7 +9,6 @@ import xarray as xr
 import certifi
 from pyproj import Transformer
 
-
 # Create a dictionary (i.e., look-up table; LUT) including the HLS product bands mapped to names
 lut = {'HLSS30':
        {'B01': 'COASTAL-AEROSOL',
@@ -25,7 +24,11 @@ lut = {'HLSS30':
         'B10': 'CIRRUS',
         'B11': 'SWIR1', 
         'B12': 'SWIR2', 
-        'Fmask': 'FMASK'},
+        'Fmask': 'FMASK',
+        'SZA': 'SZA',
+        'SAA': 'SAA',
+        'VZA': 'VZA',
+        'VAA': 'VAA'},
        'HLSL30': 
        {'B01': 'COASTAL-AEROSOL',
         'B02': 'BLUE', 
@@ -37,17 +40,21 @@ lut = {'HLSS30':
         'B09': 'CIRRUS', 
         'B10': 'TIR1', 
         'B11': 'TIR2', 
-        'Fmask': 'FMASK'}}
+        'Fmask': 'FMASK',
+        'SZA': 'SZA',
+        'SAA': 'SAA',
+        'VZA': 'VZA',
+        'VAA': 'VAA'}}
 
 # List of all available/acceptable band names
 all_bands = ['ALL', 'COASTAL-AEROSOL', 'BLUE', 'GREEN', 'RED', 'RED-EDGE1', 'RED-EDGE2', 'RED-EDGE3', 
              'NIR1', 'SWIR1', 'SWIR2', 'CIRRUS', 'TIR1', 'TIR2', 'WATER-VAPOR', 'FMASK']
 
 # list of just the bands currently used in functions
-needed_bands = ['BLUE', 'GREEN', 'RED', 'NIR1', 'SWIR1', 'SWIR2', 'FMASK']
+needed_bands = ['BLUE', 'GREEN', 'RED', 'NIR1', 'SWIR1', 'SWIR2', 'FMASK', 'SZA', 'SAA', 'VZA', 'VAA']
 
 
-def HLS_CMR_STAC(hls_data, bbox_latlon, lim=100, aws=False):
+def HLS_CMR_STAC(hls_data, bbox_latlon, lim=100, aws=False, debug=False):
     stac = 'https://cmr.earthdata.nasa.gov/stac/' # CMR-STAC API Endpoint
     stac_response = r.get(stac).json()            # Call the STAC API endpoint
     stac_lp = [s for s in stac_response['links'] if 'LP' in s['title']]  # Search for only LP-specific catalogs
@@ -61,6 +68,8 @@ def HLS_CMR_STAC(hls_data, bbox_latlon, lim=100, aws=False):
     search_query2 = f"{search_query}&bbox={bbox}"                                                  # Add bbox to query
     date_time = hls_data['date_range'][0]+'/'+hls_data['date_range'][1]  # Define start time period / end time period
     search_query3 = f"{search_query2}&datetime={date_time}"  # Add to query that already includes bbox
+    if debug:
+        print(search_query3)
     if lim > 100:
         s30_items = list()
         l30_items = list()
@@ -88,16 +97,16 @@ def HLS_CMR_STAC(hls_data, bbox_latlon, lim=100, aws=False):
         for stac in s30_items:
             for band in stac['assets']:
                 stac['assets'][band]['href'] = stac['assets'][band]['href'].replace('https://lpdaac.earthdata.nasa.gov/lp-prod-protected', 
-                                                                                    '/vsis3/lp-prod-protected')
+                                                                                    's3://lp-prod-protected')
                 stac['assets'][band]['href'] = stac['assets'][band]['href'].replace('https://data.lpdaac.earthdatacloud.nasa.gov/lp-prod-protected', 
-                                                                                    '/vsis3/lp-prod-protected')
+                                                                                    's3://lp-prod-protected')
                 
         for stac in l30_items:
             for band in stac['assets']:
                 stac['assets'][band]['href'] = stac['assets'][band]['href'].replace('https://lpdaac.earthdata.nasa.gov/lp-prod-protected', 
-                                                                                    '/vsis3/lp-prod-protected')
+                                                                                    's3://lp-prod-protected')
                 stac['assets'][band]['href'] = stac['assets'][band]['href'].replace('https://data.lpdaac.earthdatacloud.nasa.gov/lp-prod-protected', 
-                                                                                    '/vsis3/lp-prod-protected')
+                                                                                    's3://lp-prod-protected')
     return {'S30': s30_items,
             'L30': l30_items}
 
@@ -133,19 +142,25 @@ def setup_netrc(creds, aws):
     
 def build_xr(stac_dict, lut=lut, bbox=None, stack_chunks=(4000, 4000), proj_epsg=32613):
     try:
-        s30_stack = stackstac.stack(stac_dict['S30'], epsg=proj_epsg, resolution=30, assets=[i for i in lut['HLSS30'] if lut['HLSS30'][i] in needed_bands],
-                                    bounds=bbox, chunksize=stack_chunks)
+        s30_stack = stackstac.stack(stac_dict['S30'], epsg=proj_epsg, resolution=30,
+                                    assets=[i for i in lut['HLSS30'] if lut['HLSS30'][i] in needed_bands],
+                                    bounds=bbox, 
+                                    chunksize=stack_chunks)
         s30_stack['band'] = [lut['HLSS30'][b] for b in s30_stack['band'].values]
         s30_stack['time'] = [datetime.fromtimestamp(t) for t in s30_stack.time.astype('int').values//1000000000]
+        s30_stack['time'] = s30_stack['time'].dt.date
         s30_stack = s30_stack.to_dataset(dim='band').reset_coords(['end_datetime', 'start_datetime'], drop=True)
     except ValueError:
         print('Warning: ValueError in S30 stacking.')
         s30_stack = None
     try:
-        l30_stack = stackstac.stack(stac_dict['L30'], epsg=32613, resolution=30, assets=[i for i in lut['HLSL30'] if lut['HLSL30'][i] in needed_bands],
-                                   bounds=bbox, chunksize=stack_chunks)
+        l30_stack = stackstac.stack(stac_dict['L30'], epsg=proj_epsg, resolution=30, 
+                                    assets=[i for i in lut['HLSL30'] if lut['HLSL30'][i] in needed_bands],
+                                    bounds=bbox,
+                                    chunksize=stack_chunks)
         l30_stack['band'] = [lut['HLSL30'][b] for b in l30_stack['band'].values]
         l30_stack['time'] = [datetime.fromtimestamp(t) for t in l30_stack.time.astype('int').values//1000000000]
+        l30_stack['time'] = l30_stack['time'].dt.date
         l30_stack = l30_stack.to_dataset(dim='band').reset_coords(['end_datetime', 'start_datetime'], drop=True)
     except ValueError:
         print('Warning: ValueError in L30 stacking.')
@@ -161,13 +176,16 @@ def build_xr(stac_dict, lut=lut, bbox=None, stack_chunks=(4000, 4000), proj_epsg
     return hls_stack.chunk({'time': 1, 'y': -1, 'x': -1})
     
 
-def get_hls(hls_data={}, bbox=[517617.2187, 4514729.5, 527253.4091, 4524372.5], 
-            lut=lut, lim=100, aws=False, stack_chunks=(4000, 4000), proj_epsg=32613):   
+def get_hls(hls_data={}, bbox=[517617.2187, 4514729.5, 527253.4091, 4524372.5], transform_bbox=True,
+            lut=lut, lim=100, aws=False, stack_chunks=(4000, 4000), proj_epsg=32613, debug=False):   
     # run functions
     transformer = Transformer.from_crs('epsg:' + str(proj_epsg), 'epsg:4326')
-    bbox_lon, bbox_lat = transformer.transform(bbox[[0, 2]], bbox[[1,3]])
-    bbox_latlon = list(np.array(list(map(list, zip(bbox_lat, bbox_lon)))).flatten())
-    catalog = HLS_CMR_STAC(hls_data, bbox_latlon, lim, aws)
+    if transform_bbox:
+        bbox_lon, bbox_lat = transformer.transform(bbox[[0, 2]], bbox[[1, 3]])
+        bbox_latlon = list(np.array(list(map(list, zip(bbox_lat, bbox_lon)))).flatten())
+    else:
+        bbox_latlon = bbox
+    catalog = HLS_CMR_STAC(hls_data, bbox_latlon, lim, aws, debug)
     da  = build_xr(catalog, lut, bbox, stack_chunks, proj_epsg)
     return da
 
@@ -175,9 +193,14 @@ def get_hls(hls_data={}, bbox=[517617.2187, 4514729.5, 527253.4091, 4524372.5],
 def setup_env(aws=False, creds=[]):
     #define gdalenv
     if aws:
+        #import boto3
+        #import rasterio as rio
+        #from rasterio.session import AWSSession
         # set up creds
         s3_cred = setup_netrc(creds, aws=aws)
-        env = dict(GDAL_DISABLE_READDIR_ON_OPEN='FALSE', 
+        env = dict(GDAL_HTTP_MAX_RETRY='5',
+                   GDAL_HTTP_RETRY_DELAY='2',
+                   GDAL_DISABLE_READDIR_ON_OPEN='EMPTY_DIR', 
                    #AWS_NO_SIGN_REQUEST='YES',
                    GDAL_MAX_RAW_BLOCK_CACHE_SIZE='200000000',
                    GDAL_SWATH_SIZE='200000000',
@@ -190,9 +213,23 @@ def setup_env(aws=False, creds=[]):
                    AWS_SECRET_ACCESS_KEY=s3_cred['secretAccessKey'],
                    AWS_ACCESS_KEY_ID=s3_cred['accessKeyId'],
                    AWS_SESSION_TOKEN=s3_cred['sessionToken'],
+                   AWS_REQUEST_PAYER='requester',
                    CURL_CA_BUNDLE=certifi.where())
+        #session = boto3.Session(aws_access_key_id=s3_cred['accessKeyId'], 
+        #                aws_secret_access_key=s3_cred['secretAccessKey'],
+        #                aws_session_token=s3_cred['sessionToken'],
+        #                region_name='us-west-2')
+        
+        #rio_env = rio.Env(AWSSession(session),
+        #          GDAL_DISABLE_READDIR_ON_OPEN='EMPTY_DIR',
+        #          GDAL_HTTP_COOKIEFILE=os.path.expanduser('~/cookies.txt'),
+        #          GDAL_HTTP_COOKIEJAR=os.path.expanduser('~/cookies.txt'))
+        #rio_env.__enter__()
+        
     else:
-        env = dict(GDAL_DISABLE_READDIR_ON_OPEN='EMPTY_DIR', 
+        env = dict(GDAL_HTTP_MAX_RETRY='5',
+                   GDAL_HTTP_RETRY_DELAY='2',
+                   GDAL_DISABLE_READDIR_ON_OPEN='EMPTY_DIR', 
                    AWS_NO_SIGN_REQUEST='YES',
                    GDAL_MAX_RAW_BLOCK_CACHE_SIZE='200000000',
                    GDAL_SWATH_SIZE='200000000',
@@ -200,6 +237,6 @@ def setup_env(aws=False, creds=[]):
                    GDAL_HTTP_COOKIEFILE=os.path.expanduser('~/cookies.txt'),
                    GDAL_HTTP_COOKIEJAR=os.path.expanduser('~/cookies.txt'),
                    CURL_CA_BUNDLE=certifi.where())
-
+    
     os.environ.update(env)
     
