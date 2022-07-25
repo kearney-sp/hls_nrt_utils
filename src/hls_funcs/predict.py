@@ -183,7 +183,7 @@ def pred_cov(dat, model):
                                     input_core_dims=np.repeat(['z'], len(band_list)),
                                     output_core_dims=['z', 'z', 'z', 'z'],
                                     output_dtypes=['float32', 'float32', 'float32', 'float32'])
-        cov_xr = xr.concat(unmixed_xr, dim='type').unstack('z')
+        cov_xr = xr.concat([x.unstack('z') for x in unmixed_xr], dim='type')
         cov_xr = cov_xr.assign_coords(type=name)
         return cov_xr.to_dataset(dim='type')
 
