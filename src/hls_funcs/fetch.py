@@ -76,8 +76,10 @@ def HLS_CMR_STAC(hls_data, bbox_latlon, lim=100, aws=False, debug=False):
     search_query_l30 = f"{lp_search_l30}&limit=100"    # Add in a limit parameter to retrieve 100 items at a time.
     search_query2_l30 = f"{search_query_l30}&bbox={bbox}"                                                  # Add bbox to query    
     search_query3_l30 = f"{search_query2_l30}&datetime={date_time}"  # Add to query that already includes bbox
+
     s30_items = list()
     l30_items = list()
+    
     if debug:
         print(search_query3_s30)
     if lim > 100:
@@ -196,12 +198,8 @@ def build_xr(stac_dict, lut=lut, bbox=None, stack_chunks=(3660, 3660), proj_epsg
     return hls_stack.chunk({'time': 1, 'y': -1, 'x': -1})
     
 
-def get_hls(hls_data={}, bbox=np.array([517617.2187, 4514729.5, 527253.4091, 4524372.5]), transform_bbox=True,
+def get_hls(hls_data={}, bbox=[517617.2187, 4514729.5, 527253.4091, 4524372.5], transform_bbox=True,
             lut=lut, lim=100, aws=False, stack_chunks=(4000, 4000), proj_epsg=32613, debug=False):   
-    """" 
-    bbox: should be in the form np.array([x_min, y_min, x_max, y_max]) in UTM. Default is bounds of CPER 
-    proj_epsg: should be in a UTM projected coordinate so resolution can be in meters
-    """ 
     # run functions
     transformer = Transformer.from_crs('epsg:' + str(proj_epsg), 'epsg:4326')
     if transform_bbox:
