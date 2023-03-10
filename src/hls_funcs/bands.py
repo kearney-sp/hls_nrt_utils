@@ -1,4 +1,6 @@
-
+"""
+Define individual bands from HLS by name and mask based on default mask value
+"""
 
 def blue_func(src):
     blue = src['BLUE'].where(src['BLUE'] != -9999)
