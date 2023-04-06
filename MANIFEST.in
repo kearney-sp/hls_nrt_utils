@@ -1,2 +1,3 @@
 recursive-include data_files *
 include README.md
+include src/models/*.pk
