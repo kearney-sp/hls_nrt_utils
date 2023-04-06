@@ -12,5 +12,6 @@ setup(name='hls_nrt_utils',
       author_email='sean.patrick@hotmail.com',
       license='MIT',
       packages=['src', 'src.hls_funcs', 'src.models', 'src.objects'],
-      install_requires=['cartopy','certifi','cvxopt','dask','geopandas','numpy','pandas','rasterio','rioxarray','scikit-image','scikit-learn','scipy','stackstac','statsmodels','xarray','pysptools']
+      install_requires=['cartopy','certifi','cvxopt','dask','geopandas','numpy','pandas','rasterio','rioxarray','scikit-image','scikit-learn','scipy','stackstac','statsmodels','xarray','pysptools'],
+      include_package_data=True
     )
