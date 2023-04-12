@@ -2,7 +2,7 @@ import os
 import numpy as np
 import math
 import xarray as xr
-from src.hls_funcs.masks import mask_hls
+from hlsstack.hls_funcs.masks import mask_hls
 from rasterio.plot import show
 from matplotlib import colors
 import re
