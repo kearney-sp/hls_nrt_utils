@@ -9,7 +9,6 @@ wav_SWIR2 = 2290 - (2290 - 2110) / 2
 
 
 def ndvi_func(src):
-    # from src.hls_funcs.bands import red_func, nir_func
     band_RED = src['RED'].where(src['RED'] != -9999)
     band_NIR = src['NIR1'].where(src['NIR1'] != -9999)
     ndvi = (band_NIR - band_RED) / (band_NIR + band_RED)
@@ -18,7 +17,6 @@ def ndvi_func(src):
 
 
 def dfi_func(src):
-    # from src.hls_funcs.bands import red_func, nir_func, swir1_func, swir2_func
     band_RED = src['RED'].where(src['RED'] != -9999)
     band_NIR = src['NIR1'].where(src['NIR1'] != -9999)
     band_SWIR1 = src['SWIR1'].where(src['SWIR1'] != -9999)
@@ -28,7 +26,6 @@ def dfi_func(src):
 
 
 def ndti_func(src):
-    # from src.hls_funcs.bands import swir1_func, swir2_func
     band_SWIR1 = src['SWIR1'].where(src['SWIR1'] != -9999)
     band_SWIR2 = src['SWIR2'].where(src['SWIR2'] != -9999)
     ndti = (band_SWIR1 - band_SWIR2) / (band_SWIR1 + band_SWIR2)
@@ -37,7 +34,6 @@ def ndti_func(src):
 
 
 def satvi_func(src):
-    # from src.hls_funcs.bands import red_func, swir1_func, swir2_func
     band_RED = src['RED'].where(src['RED'] != -9999)
     band_SWIR1 = src['SWIR1'].where(src['SWIR1'] != -9999)
     band_SWIR2 = src['SWIR2'].where(src['SWIR2'] != -9999)
@@ -47,7 +43,6 @@ def satvi_func(src):
 
 
 def ndii7_func(src):
-    # from src.hls_funcs.bands import nir_func, swir2_func
     band_NIR = src['NIR1'].where(src['NIR1'] != -9999)
     band_SWIR2 = src['SWIR2'].where(src['SWIR2'] != -9999)
     ndii7 = (band_NIR - band_SWIR2) / (band_NIR + band_SWIR2)
@@ -55,7 +50,6 @@ def ndii7_func(src):
 
 
 def bai_126_func(src):
-    # from src.hls_funcs.bands import blue_func, green_func, swir2_func
     band_BLUE = src['BLUE'].where(src['BLUE'] != -9999)
     band_GREEN = src['GREEN'].where(src['GREEN'] != -9999)
     band_SWIR2 = src['SWIR2'].where(src['SWIR2'] != -9999)
@@ -69,7 +63,6 @@ def bai_126_func(src):
 
 
 def bai_136_func(src):
-    # from src.hls_funcs.bands import blue_func, red_func, swir2_func
     band_BLUE = src['BLUE'].where(src['BLUE'] != -9999)
     band_RED = src['RED'].where(src['RED'] != -9999)
     band_SWIR2 = src['SWIR2'].where(src['SWIR2'] != -9999)
@@ -83,7 +76,6 @@ def bai_136_func(src):
 
 
 def bai_146_func(src):
-    # from src.hls_funcs.bands import blue_func, nir_func, swir2_func
     band_BLUE = src['BLUE'].where(src['BLUE'] != -9999)
     band_NIR = src['NIR1'].where(src['NIR1'] != -9999)
     band_SWIR2 = src['SWIR2'].where(src['SWIR2'] != -9999)
@@ -97,7 +89,6 @@ def bai_146_func(src):
 
 
 def bai_236_func(src):
-    # from src.hls_funcs.bands import green_func, red_func, swir2_func
     band_GREEN = src['GREEN'].where(src['GREEN'] != -9999)
     band_RED = src['RED'].where(src['RED'] != -9999)
     band_SWIR2 = src['SWIR2'].where(src['SWIR2'] != -9999)
@@ -111,7 +102,6 @@ def bai_236_func(src):
 
 
 def bai_246_func(src):
-    # from src.hls_funcs.bands import green_func, nir_func, swir2_func
     band_GREEN = src['GREEN'].where(src['GREEN'] != -9999)
     band_NIR = src['NIR1'].where(src['NIR1'] != -9999)
     band_SWIR2 = src['SWIR2'].where(src['SWIR2'] != -9999)
@@ -125,7 +115,6 @@ def bai_246_func(src):
 
 
 def bai_346_func(src):
-    # from .bands import red_func, nir_func, swir2_func
     band_RED = src['RED'].where(src['RED'] != -9999)
     band_NIR = src['NIR1'].where(src['NIR1'] != -9999)
     band_SWIR2 = src['SWIR2'].where(src['SWIR2'] != -9999)
