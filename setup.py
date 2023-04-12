@@ -6,12 +6,12 @@ with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
 setup(name='hls_nrt_utils',
-      version='0.0.1',
+      version='0.0.2',
       description='PIP-installable utilities for performing near-real-time analyses using Harmonized Landsat-Sentinel dataset.',
       author='Sean Patrick Kearney',
       author_email='sean.patrick@hotmail.com',
       license='MIT',
-      packages=['src', 'src.hls_funcs', 'src.models', 'src.objects'],
+      packages=['hlsstack', 'hlsstack.hls_funcs', 'hlsstack.models', 'hlsstack.objects'],
       install_requires=['cartopy','certifi','cvxopt','dask','geopandas','numpy','pandas','rasterio','rioxarray','scikit-image','scikit-learn','scipy','stackstac','statsmodels','xarray','pysptools'],
       include_package_data=True
     )
