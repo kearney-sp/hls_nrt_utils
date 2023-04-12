@@ -1,8 +1,8 @@
 import pickle
 import pandas as pd
 import xarray as xr
-from src.hls_funcs.bands import *
-from src.hls_funcs.indices import *
+from hlsstack.hls_funcs.bands import *
+from hlsstack.hls_funcs.indices import *
 from pysptools.abundance_maps import amaps
 import scipy.stats as st
 from sklearn.cross_decomposition import PLSRegression
