@@ -57,7 +57,7 @@ def mask_hls(da, mask_types=['all']):
         print('ERROR in "mask_types" definition. mask_types must be a list and one of, "all", "cirrus", "cloud", "cloud_adj", "snow", "water".')
 
 def bolton_mask(ds, time_dim='time'):
-    from src.hls_funcs.bands import blue_func, swir2_func
+    from hlsstack.hls_funcs.bands import blue_func, swir2_func
     dat_blue = blue_func(ds)
     dat_swir2 = swir2_func(ds)
 
@@ -164,7 +164,7 @@ def shp2mask(shp, xr_object, transform, outshape, fill=0, dtype='int16', **kwarg
 
 
 def atsa_mask(hls_ds, kwargs=None):
-    from src.utils.atsa_utils import mask_hls_atsa
+    from hlsstack.utils.atsa_utils import mask_hls_atsa
     
     atsa_params = {
         'dn_max': 10000,  # maximum value of DN, e.g. 7-bit data is 127, 8-bit is 255
