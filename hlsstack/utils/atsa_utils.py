@@ -246,34 +246,34 @@ def mask_hls_atsa(hls_ds, atsa_params, hls_mask, water, cloud, shadow):
     time_shadow_edge = (num_shadow_edge > 0).persist()
     
     # apply existing mask to pixels with < 2 clear dates
+    mask_nonc = mask['time'].isin(mask['time'][time_nonc]).compute()
     mask = xr.where(
-        mask.where(
-            mask['time'].isin(mask['time'][time_nonc])).fillna(False),
+        mask.where(mask_nonc).fillna(False),
         mask_shadow_ini, mask)
 
     # change to shadow if clear dates >= 2, potential shadow == True and shadow_img < b2_mean
+    mask_ind_shadow = ind_shadow['time'].isin(ind_shadow['time'][~time_nonc & 
+                                                                 time_shadow]).compute()
     mask = xr.where(
-        ind_shadow.where(
-        ind_shadow['time'].isin(ind_shadow['time'][~time_nonc & 
-                                                   time_shadow])).fillna(False), 
+        ind_shadow.where(mask_ind_shadow).fillna(False), 
         0, mask)
 
     # change to shadow if clear dates >= 2, shadow_img >= b2_mean and ind_shadow2 logical is True
+    mask_ind_shadow2 = ind_shadow2['time'].isin(ind_shadow2['time'][~time_nonc &
+                                                                    ~time_shadow &
+                                                                    time_shadow2]).compute()
     mask = xr.where(
-        ind_shadow2.where(
-        ind_shadow2['time'].isin(ind_shadow2['time'][~time_nonc &
-                                                     ~time_shadow &
-                                                     time_shadow2])).fillna(False),
+        ind_shadow2.where(mask_ind_shadow2).fillna(False),
         0, mask)
 
     # change to shadow if clear dates >= 2, shadow_img >= b2_mean, ind_shadow2 logical is False and
     #ind_shadow_edge logical is True
-    mask = xr.where(
-        ind_shadow_edge.where(
-            ind_shadow_edge['time'].isin(ind_shadow_edge['time'][~time_nonc &
+    mask_ind_shadow_edge = ind_shadow_edge['time'].isin(ind_shadow_edge['time'][~time_nonc &
                                                                  ~time_shadow &
                                                                  ~time_shadow2 & 
-                                                                 time_shadow_edge])).fillna(False),
+                                                                 time_shadow_edge]).compute()
+    mask = xr.where(
+        ind_shadow_edge.where(mask_ind_shadow_edge).fillna(False),
         0, mask)
     
     # correct isolated shadow
@@ -349,7 +349,7 @@ def calc_hot(da_blue, da_red, rmin, rmax, n_bin):
 
     ind_bin = np.logical_and(da_blue >= rmin + bin_size.bin_min * bin_size,
                              da_blue < rmin + (bin_size.bin_min + 1) * bin_size)
-    num_bin = ind_bin.sum(['y', 'x'])#.compute()
+    num_bin = ind_bin.sum(['y', 'x']).compute()
 
     x_bin = da_blue.where(num_bin >= 20)
 
@@ -357,7 +357,7 @@ def calc_hot(da_blue, da_red, rmin, rmax, n_bin):
     y_bin = da_red.where(num_bin >= 20)#.compute()
 
     ind_good = (y_bin <= y_bin.mean(dim=['y', 'x']) + 3.0 * y_bin.std(dim=['y', 'x']))
-    num_good = ind_good.sum(dim=['y', 'x'])#.compute()
+    num_good = ind_good.sum(dim=['y', 'x']).compute()
 
     x_bin = x_bin.where(ind_good)#.compute()
     y_bin = y_bin.where(ind_good)#.compute()
@@ -376,8 +376,6 @@ def calc_hot(da_blue, da_red, rmin, rmax, n_bin):
 
     x_hot = x_bin_select.groupby('time').mean(['y', 'x'])#.chunk({'time': 1, 'bin_min': -1})
     y_hot = y_bin_select.groupby('time').mean(['y', 'x'])#.chunk({'time': 1, 'bin_min': -1})
-
-    #x_hot.compute()
 
     ds_hot = xr.concat(calc_hot_xr(x_hot, y_hot), dim='var')
     ds_hot = ds_hot.assign_coords(var=['result0', 'result1', 'slope', 'intercept'])
