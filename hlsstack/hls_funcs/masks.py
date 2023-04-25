@@ -197,10 +197,12 @@ def atsa_mask(hls_ds, kwargs=None):
     date_mask = hls_ds['NIR1'].isnull().all(dim=['y', 'x']).compute()
     hls_ds = hls_ds.where(~date_mask, drop=True)
     
-    # get snow mask
+    # get intitial snow mask
     snow =  mask_hls(hls_ds['FMASK'], mask_types=['snow'])
+    # compute snow mask by dates
+    snowdays_mask = (snow==1).all(dim=['y', 'x'])
     # drop any dates where all values are snow
-    hls_ds = hls_ds.where(~(snow==1).all(dim=['y', 'x']), drop=True)
+    hls_ds = hls_ds.where(~snowdays_mask, drop=True)
     # convert any snow-covered pixels to NaN
     hls_ds[['BLUE', 'GREEN', 'RED', 'NIR1', 'SWIR1', 'SWIR2']] = hls_ds[['BLUE',
                                                                          'GREEN', 
