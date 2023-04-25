@@ -193,8 +193,9 @@ def atsa_mask(hls_ds, kwargs=None):
         for k in kwargs:
             atsa_params[k] = kwargs[k]
 
-    # drop any dates with all null values
-    hls_ds = hls_ds.where(~hls_ds['NIR1'].isnull().all(dim=['y', 'x']), drop=True)
+    # drop any dates with all null values after pre-computing mask
+    date_mask = hls_ds['NIR1'].isnull().all(dim=['y', 'x']).compute()
+    hls_ds = hls_ds.where(~date_mask, drop=True)
     
     # get snow mask
     snow =  mask_hls(hls_ds['FMASK'], mask_types=['snow'])
