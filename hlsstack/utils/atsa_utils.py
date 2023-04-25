@@ -171,7 +171,8 @@ def mask_hls_atsa(hls_ds, atsa_params, hls_mask, water, cloud, shadow):
     p_clear_land = ind_l.sum(dim=['y', 'x'])
 
     # find first image with least clouds
-    time_least_cloud = p_clear_land.where(p_clear_land == p_clear_land.max(), drop=True).isel(time=0).time
+    p_most_clear = (p_clear_land == p_clear_land.max()).compute()
+    time_least_cloud = p_clear_land.where(p_most_clear, drop=True).isel(time=0).time
     
     # get non-cloud land indices
     ind_l = np.logical_and(np.logical_or(water == 0, hls_ds['NIR1'] >= atsa_params['dn_max'] * 0.1), mask <= 1)
