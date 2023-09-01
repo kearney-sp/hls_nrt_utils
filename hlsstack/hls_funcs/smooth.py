@@ -115,10 +115,10 @@ def non_uniform_savgol(x, y, window, polynom):
     return y_smoothed
 
 
-def double_savgol(ts, double=True, window1_min=11, window2=59, polynom1=3, polynom2=3, limit=61):
+def double_savgol(ts, double=True, window1_min_obs=11, window1_max=21, window2=59, polynom1=3, polynom2=3, limit=61):
     ts_tmp = ts.copy()
-    window1 = int(np.max([7, int(len(ts_tmp[~np.isnan(ts_tmp)]) / 4) // 2 * 2 + 1]))
-    if double and len(ts_tmp[~np.isnan(ts_tmp)]) > window1_min:
+    window1 = int(np.min(np.max([7, int(len(ts_tmp[~np.isnan(ts_tmp)]) / 4) // 2 * 2 + 1])), window1_max)
+    if double and len(ts_tmp[~np.isnan(ts_tmp)]) > window1_min_obs:
         ts_tmp[~np.isnan(ts_tmp)] = non_uniform_savgol(np.arange(len(ts_tmp))[~np.isnan(ts_tmp)],
                                                        ts_tmp[~np.isnan(ts_tmp)],
                                                        window=window1, polynom=polynom1)
@@ -183,7 +183,10 @@ def despike_ts(dat_ts, dat_thresh, days_thresh, z_thresh=3.5, mask_outliers=Fals
                     slope = dy / dx
                     dat_interp = dat_ts_cln[idx_pre] + slope[0] * (idx - idx_pre)
                     dat_diff = dat_interp - dat_ts_cln[idx]
-                    shadow_val = dat_diff / (dat_ts_cln[idx_post] - dat_ts_cln[idx_pre])
+                    if (dat_ts_cln[idx_post] - dat_ts_cln[idx_pre]) == 0:
+                        shadow_val = np.nan
+                    else:
+                        shadow_val = dat_diff / (dat_ts_cln[idx_post] - dat_ts_cln[idx_pre])
                     if (idx_post - idx_pre < days_thresh) & (np.abs(dat_diff) > dat_thresh) & (np.abs(shadow_val) > 2):
                         dat_ts_cln[idx] = np.nan
                         dat_mask[idx] = 1
