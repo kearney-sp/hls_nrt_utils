@@ -117,7 +117,7 @@ def non_uniform_savgol(x, y, window, polynom):
 
 def double_savgol(ts, double=True, window1_min_obs=11, window1_max=21, window2=59, polynom1=3, polynom2=3, limit=61):
     ts_tmp = ts.copy()
-    window1 = int(np.min(np.max([7, int(len(ts_tmp[~np.isnan(ts_tmp)]) / 4) // 2 * 2 + 1])), window1_max)
+    window1 = int(np.min([np.max([7, int(len(ts_tmp[~np.isnan(ts_tmp)]) / 4) // 2 * 2 + 1])), window1_max])
     if double and len(ts_tmp[~np.isnan(ts_tmp)]) > window1_min_obs:
         ts_tmp[~np.isnan(ts_tmp)] = non_uniform_savgol(np.arange(len(ts_tmp))[~np.isnan(ts_tmp)],
                                                        ts_tmp[~np.isnan(ts_tmp)],
