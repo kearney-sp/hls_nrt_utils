@@ -113,7 +113,7 @@ def HLS_CMR_STAC(hls_data, bbox_latlon, lim=100, aws=False, debug=False):
     bbox = f'{bbox_latlon[0]},{bbox_latlon[1]},{bbox_latlon[2]},{bbox_latlon[3]}'  
     
     # create a string for the date range from defined date range
-    date_time = hls_data['date_range'][0]+'/'+hls_data['date_range'][1]  
+    date_time = hls_data['date_range'][0] + 'T00:00:00Z' + '/' + hls_data['date_range'][1] + 'T00:00:00Z'  
     
     # add in a limit parameter to retrieve 100 items at a time (will perform multiple searches if necessary)
     search_query_s30 = f"{lp_search_s30}&limit=100"   
@@ -171,7 +171,7 @@ def HLS_CMR_STAC(hls_data, bbox_latlon, lim=100, aws=False, debug=False):
                 break 
             
             # update query with new start time 
-            date_time = start_time+'/'+hls_data['date_range'][1]
+            date_time = start_time + 'T00:00:00Z' + '/' + hls_data['date_range'][1] + 'T00:00:00Z'
             search_query3_s30 = f"{search_query2_s30}&datetime={date_time}"  
             search_query3_l30 = f"{search_query2_l30}&datetime={date_time}" 
             if debug:
