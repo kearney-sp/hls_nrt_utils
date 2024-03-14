@@ -156,24 +156,28 @@ def HLS_CMR_STAC(hls_data, bbox_latlon, lim=100, aws=False, debug=False):
                                           '%Y-%m-%d'),
                         datetime.strptime(l30_items[-1]['properties']['datetime'].split('T')[0], 
                                           '%Y-%m-%d')).date() + timedelta(days=1))
-            elif len(s30_items) > 0:
-                # get the date of the earliest image in the current query results from the S30 collection
-                start_time = str(
-                    datetime.strptime(s30_items[-1]['properties']['datetime'].split('T')[0], 
-                                      '%Y-%m-%d').date() + timedelta(days=1))
-            elif len(l30_items) > 0:
-                # get the date of the earliest image in the current query results from the L30 collection
-                start_time = str(
-                    datetime.strptime(l30_items[-1]['properties']['datetime'].split('T')[0], 
-                                      '%Y-%m-%d').date() + timedelta(days=1))
+                # save in case needed, but should be overwritten below
+                start_time_s30 = start_time
+                start_time_l30 = start_time
             else:
                 # stop searching if no results are found
                 break 
+            if len(s30_items) > 0:
+                # get the date of the earliest image in the current query results from the S30 collection
+                start_time_s30 = str(
+                    datetime.strptime(s30_items[-1]['properties']['datetime'].split('T')[0], 
+                                      '%Y-%m-%d').date() + timedelta(days=1))
+            if len(l30_items) > 0:
+                # get the date of the earliest image in the current query results from the L30 collection
+                start_time_l30 = str(
+                    datetime.strptime(l30_items[-1]['properties']['datetime'].split('T')[0], 
+                                      '%Y-%m-%d').date() + timedelta(days=1))
             
             # update query with new start time 
-            date_time = start_time + 'T00:00:00Z' + '/' + hls_data['date_range'][1] + 'T00:00:00Z'
-            search_query3_s30 = f"{search_query2_s30}&datetime={date_time}"  
-            search_query3_l30 = f"{search_query2_l30}&datetime={date_time}" 
+            date_time_s30 = start_time_s30 + 'T00:00:00Z' + '/' + hls_data['date_range'][1] + 'T00:00:00Z'
+            date_time_l30 = start_time_l30 + 'T00:00:00Z' + '/' + hls_data['date_range'][1] + 'T00:00:00Z'
+            search_query3_s30 = f"{search_query2_s30}&datetime={date_time_s30}"  
+            search_query3_l30 = f"{search_query2_l30}&datetime={date_time_l30}" 
             if debug:
                 # print the current queries if debugging
                 print(search_query3_s30)
