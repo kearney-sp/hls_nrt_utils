@@ -10,23 +10,23 @@ from sklearn.preprocessing import PolynomialFeatures
 import dask
 
 func_dict = {
-    "blue": blue_func,
-    "green": green_func,
-    "red": red_func,
-    "nir": nir_func,
-    "swir1": swir1_func,
-    "swir2": swir2_func,
-    "ndvi": ndvi_func,
-    "dfi": dfi_func,
-    "ndti": ndti_func,
-    "satvi": satvi_func,
-    "ndii7": ndii7_func,
-    "bai_126": bai_126_func,
-    "bai_136": bai_136_func,
-    "bai_146": bai_146_func,
-    "bai_236": bai_236_func,
-    "bai_246": bai_246_func,
-    "bai_346": bai_346_func
+    "BLUE": blue_func,
+    "GREEN": green_func,
+    "RED": red_func,
+    "NIR1": nir_func,
+    "SWIR1": swir1_func,
+    "SWIR2": swir2_func,
+    "NDVI": ndvi_func,
+    "DFI": dfi_func,
+    "NDTI": ndti_func,
+    "SATVI": satvi_func,
+    "NDII7": ndii7_func,
+    "BAI_126": bai_126_func,
+    "BAI_136": bai_136_func,
+    "BAI_146": bai_146_func,
+    "BAI_236": bai_236_func,
+    "BAI_246": bai_246_func,
+    "BAI_346": bai_346_func
 }
 
 
@@ -55,8 +55,8 @@ def predict_biomass(dat, model, se=True):
 
 
 def pred_bm(dat, model):
-    model_vars = [n for n in model.params.index if ":" not in n and "Intercept" not in n]
-
+    #model_vars = [n for n in model.params.index if ":" not in n and "Intercept" not in n]
+    model_vars = [k for k in func_dict.keys()]
     dat_masked = dat.where(dat.notnull())
 
     def pred_func(*args, mod_vars_np):
@@ -70,7 +70,7 @@ def pred_bm(dat, model):
 
     def pred_func_xr(dat_xr, model_vars_xr):
         dat_xr = dat_xr.stack(z=('y', 'x')).persist()
-        dims_list = [['z'] for v in model_vars]
+        dims_list = [['z'] for v in model_vars_xr]
         vars_list_xr = []
         for v in model_vars_xr:
             vars_list_xr.append(func_dict[v](dat_xr))
