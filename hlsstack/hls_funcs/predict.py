@@ -1,6 +1,10 @@
 import pickle
+import os
+import glob
 import pandas as pd
 import xarray as xr
+import numpy as np
+import random
 from hlsstack.hls_funcs.bands import *
 from hlsstack.hls_funcs.indices import *
 from pysptools.abundance_maps import amaps
@@ -8,6 +12,8 @@ import scipy.stats as st
 from sklearn.cross_decomposition import PLSRegression
 from sklearn.preprocessing import PolynomialFeatures
 import dask
+import warnings
+from sklearn.exceptions import InconsistentVersionWarning
 
 func_dict = {
     "BLUE": blue_func,
@@ -21,6 +27,17 @@ func_dict = {
     "NDTI": ndti_func,
     "SATVI": satvi_func,
     "NDII7": ndii7_func,
+    'SAVI': savi_func,
+    'RDVI': rdvi_func,
+    'MTVI1': mtvi1_func,
+    'NCI': nci_func,
+    'NDCI': ndci_func,
+    'PSRI': psri_func,
+    'NDWI': ndwi_func,
+    'EVI': evi_func,
+    'TCBI': tcbi_func,
+    'TCGI': tcgi_func,
+    'TCWI': tcwi_func,
     "BAI_126": bai_126_func,
     "BAI_136": bai_136_func,
     "BAI_146": bai_146_func,
@@ -56,16 +73,19 @@ def predict_biomass(dat, model, se=True):
 
 def pred_bm(dat, model):
     #model_vars = [n for n in model.params.index if ":" not in n and "Intercept" not in n]
-    model_vars = [k for k in func_dict.keys()]
+    model_vars = model.feature_names_in_
     dat_masked = dat.where(dat.notnull())
 
     def pred_func(*args, mod_vars_np):
+        warnings.filterwarnings('ignore', category=InconsistentVersionWarning)
         vars_dict_np = {}
         for idx, v in enumerate(mod_vars_np):
             vars_dict_np[v] = args[idx]
+        df_vars = pd.DataFrame(vars_dict_np, columns=mod_vars_np)
         bm_np = np.ones_like(args[0]) * np.nan
         mask = np.any(np.isnan(args), axis=0)
-        bm_np[~mask] = np.exp(model.predict(vars_dict_np))
+        if len(df_vars[model.feature_names_in_].dropna(how='any')) > 0:
+            bm_np[~mask] = model.predict(df_vars[model.feature_names_in_].dropna(how='any'))
         return bm_np.astype('int16')
 
     def pred_func_xr(dat_xr, model_vars_xr):
@@ -89,23 +109,34 @@ def pred_bm(dat, model):
     return bm_out
 
 
-def pred_bm_se(dat, model):
-    model_vars = [n for n in model.params.index if ":" not in n and "Intercept" not in n]
-
+def pred_bm_se(dat, model, mod_boot_dir, nboot=100, avg_std=145.21):
+    mod_list = glob.glob(os.path.join(mod_boot_dir,'*.pk'))
+    model_vars = model.feature_names_in_
     dat_masked = dat.where(dat.notnull)
-
+    
     def pred_func(*args, mod_vars_np):
-        mask = np.any(np.isnan(args), axis=0)
+        warnings.filterwarnings('ignore', category=InconsistentVersionWarning)
         vars_dict_np = {}
         for idx, v in enumerate(mod_vars_np):
             vars_dict_np[v] = args[idx]
+        df_vars = pd.DataFrame(vars_dict_np, columns=mod_vars_np)
         se_np = np.ones_like(args[0]) * np.nan
-        se_np[~mask] = model.get_prediction(vars_dict_np).se_obs
+        mask = np.any(np.isnan(args), axis=0)
+        if len(df_vars[model.feature_names_in_].dropna(how='any')) > 0:
+            rand_mod_idx = random.sample(range(len(mod_list)), nboot)
+            preds = []
+            for b in rand_mod_idx:
+                with open(mod_list[b], 'rb') as f:
+                    mod_tmp = pd.compat.pickle_compat.load(f)
+                preds_tmp = mod_tmp.predict(df_vars[mod_tmp.feature_names_in_].dropna(how='any'))
+                preds.append(pd.Series(preds_tmp, name='predy_' + str(b)))
+            df_preds = pd.concat(preds, axis=1)
+            se_np[~mask] = df_preds.std(axis=1).values + avg_std
         return se_np.astype('float32')
 
     def pred_func_xr(dat_xr, model_vars_xr):
         dat_xr = dat_xr.stack(z=('y', 'x'))
-        dims_list = [['z'] for v in model_vars]
+        dims_list = [['z'] for v in model_vars_xr]
         vars_list_xr = []
         for v in model_vars_xr:
             vars_list_xr.append(func_dict[v](dat_xr))
@@ -157,9 +188,9 @@ def pred_bm_thresh(dat_bm, dat_se, thresh_kg):
 def pred_cov(dat, model):
     pls2_mod = model
 
-    band_list = ['blue', 'green', 'red', 'nir', 'swir1', 'swir2',
-                 'dfi', 'ndvi', 'ndti', 'satvi', 'ndii7',
-                 'bai_126', 'bai_136', 'bai_146', 'bai_236', 'bai_246', 'bai_346']
+    band_list = ['BLUE', 'GREEN', 'RED', 'NIR1', 'SWIR1', 'SWIR2',
+                 'DFI', 'NDVI', 'NDTI', 'SATVI', 'NDII7',
+                 'BAI_126', 'BAI_136', 'BAI_146', 'BAI_236', 'BAI_246', 'BAI_346']
 
     def pred_cov_np(*args):
         mat = np.array(args).T
