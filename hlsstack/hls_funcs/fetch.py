@@ -130,64 +130,91 @@ def HLS_CMR_STAC(hls_data, bbox_latlon, lim=100, aws=False, debug=False):
     # create empty lists to store results
     s30_items = list()
     l30_items = list()
+
+    # set to initially search both S30 and L30
+    skip_s30 = False
+    skip_l30 = False
     
-    if debug:
-        # print the queries if debugging
-        print(search_query3_s30)
-        print(search_query3_l30)
     if lim > 100:
         # repeat search multiple times, limiting each search to 100 results
         for i in range(int(np.ceil(lim/100))):
             if i > 10:
                 print('WARNING: Fetching more than 1000 records, this may result in a very large dataset.')
             
-            # get just the features from the current query
-            features_s30 = r.get(search_query3_s30).json()['features']
-            features_l30 = r.get(search_query3_l30).json()['features']  
-            
-            # append all features from current query to the running list
-            s30_items = s30_items + [h for h in features_s30] 
-            l30_items = l30_items + [h for h in features_l30]
-            
-            if (len(s30_items) > 0) and (len(l30_items) > 0):
-                # get the date of the earliest image in the current query results from both collections
-                start_time = str(
-                    max(datetime.strptime(s30_items[-1]['properties']['datetime'].split('T')[0],
-                                          '%Y-%m-%d'),
-                        datetime.strptime(l30_items[-1]['properties']['datetime'].split('T')[0], 
-                                          '%Y-%m-%d')).date() + timedelta(days=1))
-                # save in case needed, but should be overwritten below
-                start_time_s30 = start_time
-                start_time_l30 = start_time
+            if not skip_s30:
+                # get just the features from the current query
+                features_s30 = r.get(search_query3_s30).json()['features']
+                if debug:
+                    # print the current queries if debugging
+                    print(search_query3_s30)
             else:
-                # stop searching if no results are found
-                break 
-            if len(s30_items) > 0:
-                # get the date of the earliest image in the current query results from the S30 collection
-                start_time_s30 = str(
-                    datetime.strptime(s30_items[-1]['properties']['datetime'].split('T')[0], 
-                                      '%Y-%m-%d').date() + timedelta(days=1))
-            if len(l30_items) > 0:
-                # get the date of the earliest image in the current query results from the L30 collection
-                start_time_l30 = str(
-                    datetime.strptime(l30_items[-1]['properties']['datetime'].split('T')[0], 
-                                      '%Y-%m-%d').date() + timedelta(days=1))
-            
-            # update query with new start time 
-            date_time_s30 = start_time_s30 + 'T00:00:00Z' + '/' + hls_data['date_range'][1] + 'T00:00:00Z'
-            date_time_l30 = start_time_l30 + 'T00:00:00Z' + '/' + hls_data['date_range'][1] + 'T00:00:00Z'
-            search_query3_s30 = f"{search_query2_s30}&datetime={date_time_s30}"  
-            search_query3_l30 = f"{search_query2_l30}&datetime={date_time_l30}" 
-            if debug:
-                # print the current queries if debugging
-                print(search_query3_s30)
-                print(search_query3_l30)
+                features_s30 = []
+            if not skip_l30:
+                # get just the features from the current query
+                features_l30 = r.get(search_query3_l30).json()['features']  
+                if debug:
+                    # print the current queries if debugging
+                    print(search_query3_l30)
+            else:
+                features_l30 = []
+        
             if (len(features_s30) + len(features_l30)) == 0:
                 # stop searching if no results are found
                 break 
+            else:
+                # append all features from current query to the running list
+                s30_items = s30_items + [h for h in features_s30] 
+                l30_items = l30_items + [h for h in features_l30]
+                
+                if (len(s30_items) > 0) and (len(l30_items) > 0):
+                    # get the date of the latest image in the current query results from both collections
+                    start_time = str(
+                        max(datetime.strptime(s30_items[-1]['properties']['datetime'].split('T')[0],
+                                              '%Y-%m-%d'),
+                            datetime.strptime(l30_items[-1]['properties']['datetime'].split('T')[0], 
+                                              '%Y-%m-%d')).date() + timedelta(days=1))
+                    # save in case needed, but should be overwritten below
+                    start_time_s30 = start_time
+                    start_time_l30 = start_time
+                else:
+                    # stop searching if no results are found
+                    break 
+                if len(s30_items) > 0:
+                    # get the date of the latest image in the current query results from the S30 collection
+                    start_time_s30 = str(
+                        datetime.strptime(s30_items[-1]['properties']['datetime'].split('T')[0], 
+                                          '%Y-%m-%d').date() + timedelta(days=1))
+                if len(l30_items) > 0:
+                    # get the date of the latest image in the current query results from the L30 collection
+                    start_time_l30 = str(
+                        datetime.strptime(l30_items[-1]['properties']['datetime'].split('T')[0], 
+                                          '%Y-%m-%d').date() + timedelta(days=1))
+                
+                if start_time_s30 == hls_data['date_range'][1]:
+                    skip_s30 = True
+                    if debug:
+                        print('Skipping further search of S30 - latest date matches end of search date range.')
+                if start_time_l30 == hls_data['date_range'][1]:
+                    skip_l30 = True
+                    if debug:
+                        print('Skipping further search of L30 - latest date matches end of search date range.')
+
+                if skip_s30 and skip_l30:
+                    # stop searching if both S30 and L30 are at end of date range
+                    break
+                else:
+                    # update query with new start time 
+                    date_time_s30 = start_time_s30 + 'T00:00:00Z' + '/' + hls_data['date_range'][1] + 'T00:00:00Z'
+                    date_time_l30 = start_time_l30 + 'T00:00:00Z' + '/' + hls_data['date_range'][1] + 'T00:00:00Z'
+                    search_query3_s30 = f"{search_query2_s30}&datetime={date_time_s30}"  
+                    search_query3_l30 = f"{search_query2_l30}&datetime={date_time_l30}" 
+            
     else:
         # use for a single query when lim <= 100
-        
+        if debug:
+            # print the queries if debugging
+            print(search_query3_s30)
+            print(search_query3_l30)
         # get just the features from the query
         features_s30 = r.get(search_query3_s30).json()['features']
         features_l30 = r.get(search_query3_l30).json()['features'] 
