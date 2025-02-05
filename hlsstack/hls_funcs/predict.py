@@ -13,7 +13,7 @@ from sklearn.cross_decomposition import PLSRegression
 from sklearn.preprocessing import PolynomialFeatures
 import dask
 import warnings
-from sklearn.exceptions import InconsistentVersionWarning
+#from sklearn.exceptions import InconsistentVersionWarning
 
 func_dict = {
     "BLUE": blue_func,
@@ -77,7 +77,7 @@ def pred_bm(dat, model):
     dat_masked = dat.where(dat.notnull())
 
     def pred_func(*args, mod_vars_np):
-        warnings.filterwarnings('ignore', category=InconsistentVersionWarning)
+        #warnings.filterwarnings('ignore', category=InconsistentVersionWarning)
         vars_dict_np = {}
         for idx, v in enumerate(mod_vars_np):
             vars_dict_np[v] = args[idx]
@@ -115,7 +115,7 @@ def pred_bm_se(dat, model, mod_boot_dir, nboot=100, avg_std=145.21):
     dat_masked = dat.where(dat.notnull)
     
     def pred_func(*args, mod_vars_np):
-        warnings.filterwarnings('ignore', category=InconsistentVersionWarning)
+        #warnings.filterwarnings('ignore', category=InconsistentVersionWarning)
         vars_dict_np = {}
         for idx, v in enumerate(mod_vars_np):
             vars_dict_np[v] = args[idx]
