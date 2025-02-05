@@ -160,12 +160,13 @@ def xr_cdf(dat):
 
 
 def pred_bm_thresh(dat_bm, dat_se, thresh_kg):
-    thresh_log = np.log(thresh_kg)
+    #thresh_log = np.log(thresh_kg)
     dat_bm = dat_bm.stack(z=('y', 'x'))
     dat_se = dat_se.stack(z=('y', 'x'))
 
     def pred_func(arr_bm, arr_se):
-        thresh_pre = (thresh_log - np.log(arr_bm)) / arr_se
+        #thresh_pre = (thresh_log - np.log(arr_bm)) / arr_se
+        thresh_pre = (thresh_kg - arr_bm) / arr_se
         arr_thresh = st.norm.cdf(thresh_pre)
         return arr_thresh.astype('float32')
 
