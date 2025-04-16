@@ -297,7 +297,7 @@ def setup_netrc(creds, aws=False):
         return('')
 
     
-def build_xr(stac_dict, lut=lut, bbox=None, stack_chunks=(3660, 3660), proj_epsg=32613):
+def build_xr(stac_dict, lut=lut, bbox=None, stack_chunks=(3660, 3660), proj_epsg=32613, bands=needed_bands):
     """
     Build an xarray.DataSet from a list of urls for individual HLS images using stackstac.
     
@@ -341,7 +341,7 @@ def build_xr(stac_dict, lut=lut, bbox=None, stack_chunks=(3660, 3660), proj_epsg
     try:
         # create the initial xarray.DataArray
         s30_stack = stackstac.stack(stac_dict['S30'], epsg=proj_epsg, resolution=30,
-                                    assets=[i for i in lut['HLSS30'] if lut['HLSS30'][i] in needed_bands],
+                                    assets=[i for i in lut['HLSS30'] if lut['HLSS30'][i] in bands],
                                     bounds=bbox, 
                                     chunksize=stack_chunks)
         # rename the bands using the look-up table dictionary
@@ -393,7 +393,7 @@ def build_xr(stac_dict, lut=lut, bbox=None, stack_chunks=(3660, 3660), proj_epsg
     
 
 def get_hls(hls_data={}, bbox=[517617.2187, 4514729.5, 527253.4091, 4524372.5], transform_bbox=True,
-            lut=lut, lim=100, aws=False, stack_chunks=(3660, 3660), proj_epsg=32613, debug=False):   
+            lut=lut, lim=100, aws=False, stack_chunks=(3660, 3660), proj_epsg=32613, bands=needed_bands, debug=False):   
     # run functions
     transformer = Transformer.from_crs('epsg:' + str(proj_epsg), 'epsg:4326')
     if transform_bbox:
@@ -402,7 +402,7 @@ def get_hls(hls_data={}, bbox=[517617.2187, 4514729.5, 527253.4091, 4524372.5], 
     else:
         bbox_latlon = bbox
     catalog = HLS_CMR_STAC(hls_data, bbox_latlon, lim, aws, debug)
-    da  = build_xr(catalog, lut, bbox, stack_chunks, proj_epsg)
+    da  = build_xr(catalog, lut, bbox, stack_chunks, proj_epsg, bands)
     return da
 
 
