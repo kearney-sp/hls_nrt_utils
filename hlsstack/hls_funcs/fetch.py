@@ -142,19 +142,20 @@ def HLS_CMR_STAC(hls_data, bbox_latlon, lim=100, aws=False, debug=False):
                 print('WARNING: Fetching more than 1000 records, this may result in a very large dataset.')
             
             if not skip_s30:
-                # get just the features from the current query
-                features_s30 = r.get(search_query3_s30).json()['features']
                 if debug:
                     # print the current queries if debugging
                     print(search_query3_s30)
+                # get just the features from the current query
+                features_s30 = r.get(search_query3_s30).json()['features']
+                
             else:
                 features_s30 = []
             if not skip_l30:
-                # get just the features from the current query
-                features_l30 = r.get(search_query3_l30).json()['features']  
                 if debug:
                     # print the current queries if debugging
                     print(search_query3_l30)
+                # get just the features from the current query
+                features_l30 = r.get(search_query3_l30).json()['features']  
             else:
                 features_l30 = []
         
