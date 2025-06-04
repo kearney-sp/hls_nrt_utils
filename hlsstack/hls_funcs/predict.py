@@ -300,6 +300,8 @@ def pred_cp(dat, model):
                 cp_out[df_pheno['t_SOS'] < 0] = np.nan
             except:
                 print("An error occurred!")
+                cp_out = np.ones_like(ndvi_ts) * np.nan
+                
         # if outputting the phenologic metrics failed, return all NaN values
         else:
             cp_out = np.ones_like(ndvi_ts) * np.nan
@@ -316,6 +318,6 @@ def pred_cp(dat, model):
                               )
         return cp_xr
 
-    cp_out = pred_func_xr(dat_masked)
+    cp_out_xr = pred_func_xr(dat_masked)
 
-    return cp_out
+    return cp_out_xr
