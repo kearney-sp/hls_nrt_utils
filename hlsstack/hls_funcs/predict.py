@@ -47,30 +47,6 @@ func_dict = {
 }
 
 
-def predict_biomass(dat, model, se=True):
-    """ Predict biomass (kg/ha) and standard error of prediction from existing linear model
-        dat (xarray dataset) = new data in xarray Dataset format
-        model (object) = opened existing model using pickle
-        se (boolean) """
-
-    model_vars = [n for n in model.params.index if ":" not in n and "Intercept" not in n]
-
-    new_df = pd.DataFrame()
-    for v in model_vars:
-        new_df[v] = func_dict[v](dat).values.flatten()
-    new_df['bm'] = np.exp(model.predict(new_df))
-
-    if se:
-        new_df.loc[~new_df.bm.isnull(), 'bm_se_log'] = model.get_prediction(new_df.loc[~new_df.bm.isnull()]).se_obs
-        return [xr.DataArray(data=new_df['bm'].values.reshape(dat[list(dat.keys())[0]].shape),
-                        coords=dat.coords),
-                xr.DataArray(data=new_df['bm'].values.reshape(dat[list(dat.keys())[0]].shape),
-                             coords=dat.coords)]
-    else:
-        return xr.DataArray(data=new_df['bm'].values.reshape(dat[list(dat.keys())[0]].shape),
-                        coords=dat.coords)
-
-
 def pred_bm(dat, model):
     #model_vars = [n for n in model.params.index if ":" not in n and "Intercept" not in n]
     model_vars = model.feature_names_in_
@@ -223,206 +199,123 @@ def pred_cov(dat, model):
     return dat_cov
 
 
-def pred_bm2(dat, model):
-    model_vars = [n for n in model.params.index if ":" not in n and "Intercept" not in n]
+def pred_cp(dat, model):
+    dat_masked = dat.where(dat.notnull())
 
-    dat_masked = dat.where(dat.notnull)
+    def pheno_fq_metrics(ndvi_ts_mean):
+    
+    
+        """
+        ndvi_ts_mean (1-d array): time series of NDVI values for an entire calendar year (e.g., mean for a single pasture)
+        produce_ts (boolean): whether to return the entire time series (default) or just average between b_start and b_end (see below)
+        b_start (int): the day of year for the start of the time series subset to average over for output. Only used if produce_ts==False.
+        b_end (int): the day of the year for the end of the time series subset to average over for output. Only used if produce_ts==False.
+        """
+    
+        def running_mean(x, N):
+            cumsum = np.nancumsum(np.insert(x, 0, 0))
+            return (cumsum[N:] - cumsum[:-N]) / float(N)
+    
+        def ndvi_int_calc(ts, base, sos):
+            ts_tmp = ts - base
+            ndvi_int_ts = np.ones_like(ts_tmp) * np.nan
+            for b_i in range(ts_tmp.shape[0]):
+                ndvi_int_ts[b_i] = np.nansum(ts_tmp[sos:b_i + 1])
+            return ndvi_int_ts
 
-    #dims_list = [[dim] for v in model_vars]
+        # get length of time series
+        b = len(ndvi_ts_mean)
+        
+        if sum(np.isnan(ndvi_ts_mean)) < b*0.5:
+            try:
+                # calculate start of season and base ndvi
+                ndvi_thresh1 = np.nanpercentile(ndvi_ts_mean[91:201], 40.0)
+                date_thresh1 = next(x for x in np.where(ndvi_ts_mean > ndvi_thresh1)[0] if x > 30)
+                dndvi_ts_mean = np.ones_like(ndvi_ts_mean) * np.nan
+                dndvi_ts_mean[25:] = running_mean(np.diff(ndvi_ts_mean), 25)
+                dndvi_thresh2 = np.nanpercentile(dndvi_ts_mean[:date_thresh1][dndvi_ts_mean[:date_thresh1] > 0], 35.0)
+                sos = np.where(dndvi_ts_mean[:date_thresh1] < dndvi_thresh2)[0][-1]
+                ndvi_base = np.nanmean(ndvi_ts_mean[10:75])
+            
+                # calculate 'instantaneous greenup rate (IGR)' with potentially different lags
+                ndvi_ts_smooth_d1 = np.diff(ndvi_ts_mean, prepend=ndvi_ts_mean[0])
+            
+                ndvi_ts_smooth_d1_cum30 = np.empty_like(ndvi_ts_smooth_d1)
+                for i in range(b):
+                    ndvi_ts_smooth_d1_cum30[i] = np.nansum(ndvi_ts_smooth_d1[i - 30:i], axis=0)
+            
+                # cleanup and reshape IGR metrics
+                ndvi_ts_smooth_d1_cum30[np.where(np.isnan(ndvi_ts_smooth_d1))] = np.nan
+            
+                # calculate integrated ndvi
+                ndvi_int_ts = ndvi_int_calc(ndvi_ts_mean, ndvi_base, sos)
+                ndvi_rate_ts = np.zeros_like(ndvi_int_ts)
+            
+                # calculate rate of change
+                ndvi_rate_ts[sos:] = ndvi_int_ts[sos:] / (range(sos, ndvi_int_ts.shape[0]) - sos + 1)
+            
+                # calculate percent dry biomass estimate
+                ndvi_dry_ts = np.zeros_like(ndvi_int_ts)
+                ndvi_int_dry_ts = np.zeros_like(ndvi_int_ts)
+                for i in range(sos, ndvi_dry_ts.shape[0]):
+                    if ndvi_ts_smooth_d1[i] < 0:
+                        ndvi_dry_ts[i] = (-1.0 * ndvi_ts_smooth_d1[i] / np.nanmax(ndvi_ts_mean[:i])) * ndvi_int_ts[i]
+                    ndvi_int_dry_ts[i] = np.nansum(ndvi_dry_ts[:i])
+            
+                ndvi_int_dry_pct_ts = np.zeros_like(ndvi_int_ts)
+                ndvi_int_dry_pct_ts[ndvi_int_ts != 0] = ndvi_int_dry_ts[ndvi_int_ts != 0] / ndvi_int_ts[ndvi_int_ts != 0]
+                
+                # create the output dataframe
+                df_out = pd.DataFrame(
+                    {
+                        'NDVI': ndvi_ts_mean,
+                        'NDVI_d30': ndvi_ts_smooth_d1_cum30,
+                        'iNDVI':ndvi_int_ts,
+                        'iNDVI_dry': ndvi_int_dry_ts,
+                        'NDVI_rate': ndvi_rate_ts,
+                        'iNDVI_dry_pct': ndvi_int_dry_pct_ts,
+                        'SOS_doy': sos,
+                        't_SOS': np.arange(b) - sos
+                    }
+                )
+                return df_out
+            # return all NaN values if an IndexError occurs - this is usually due to inability to get thresholds
+            except IndexError:
+                return np.ones_like(ndvi_ts_mean) * np.nan
+        else:
+            return np.ones_like(ndvi_ts_mean) * np.nan
+    
+    def pred_func(ndvi_ts):
+        # create the phenologic metrics
+        df_pheno = pheno_fq_metrics(ndvi_ts)
+        # apply the model (if successfully output phenologic metrics)
+        if type(df_pheno) is pd.DataFrame and not np.any(np.isnan(df_pheno)):
+            # get the features for the model
+            cp_features = df_pheno[['NDVI', 'NDVI_d30', 'iNDVI', 't_SOS', 'iNDVI_dry']]
+            try:
+                # apply the random forest model
+                df_pheno['CP_pred'] = rf_cp.predict(cp_features)
+                df_pheno['CP_pred'] = df_pheno['CP_pred'].rolling(7, center=False).mean()
+                cp_out = df_pheno['CP_pred'].values
+                cp_out[df_pheno['t_SOS'] < 0] = np.nan
+            except:
+                print("An error occurred!")
+        # if outputting the phenologic metrics failed, return all NaN values
+        else np.any(np.isnan(df_pheno)):
+            cp_out = np.ones_like(ndvi_ts) * np.nan
+        return cp_out
 
-    def pred_func(*args, mod_vars_np):
-        vars_dict_np = {}
-        for idx, v in enumerate(mod_vars_np):
-            vars_dict_np[v] = args[idx]
-        #print(vars_dict_np)
-        bm_np = np.ones_like(args[0]) * np.nan
-        mask = np.any(np.isnan(args), axis=0)
-        bm_np[~mask] = np.exp(model.predict(vars_dict_np))
-        #print(bm_np)
-        return bm_np.astype('int16')
-
-    def pred_func_xr(dat_xr, model_vars_xr):
-        dims = [['z'] for v in model_vars]
-        #dat_xr = dat_xr.stack(z=('y', 'x'))
-        vars_list_xr = []
-        for v in model_vars_xr:
-            vars_list_xr.append(func_dict[v](dat_xr).stack(z=('y', 'x')))
-        bm_xr = xr.apply_ufunc(pred_func,
-                               *vars_list_xr,
-                               kwargs=dict(mod_vars_np=np.array(model_vars_xr)),
+    def pred_func_xr(dat_xr):
+        cp_xr = xr.apply_ufunc(pred_func,
+                               *[dat_xr],
                                dask='parallelized',
                                vectorize=True,
-                               input_core_dims=dims,
-                               output_core_dims=[dims[0]],
-                               output_dtypes=['int16'])
-        return bm_xr.unstack('z')
+                               input_core_dims=[['time']],
+                               output_core_dims=[['time']],
+                               output_dtypes=['float32'],
+                              )
+        return cp_xr
 
-    #bm_out = pred_func_xr(dat_masked, model_vars, dims_list)
-    bm_out = dat_masked.map_blocks(pred_func_xr, kwargs=dict(model_vars_xr=model_vars), template=dat_masked['RED'])
+    cp_out = pred_func_xr(dat_masked)
 
-    return bm_out
-
-
-def pred_bm_se2(dat, model):
-    model_vars = [n for n in model.params.index if ":" not in n and "Intercept" not in n]
-
-    dat_masked = dat.where(dat.notnull)
-
-    #dims_list = [[dim] for v in model_vars]
-
-    def pred_func(*args, mod_vars_np):
-        mask = np.any(np.isnan(args), axis=0)
-        vars_dict_np = {}
-        for idx, v in enumerate(mod_vars_np):
-            vars_dict_np[v] = args[idx]
-        #print(vars_dict_np)
-        se_np = np.ones_like(args[0]) * np.nan
-        se_np[~mask] = model.get_prediction(vars_dict_np).se_obs
-        #print(bm_np)
-        return se_np.astype('float32')
-
-    def pred_func_xr(dat_xr, model_vars_xr):
-        dims = [['z'] for v in model_vars]
-        #dat_xr = dat_xr.stack(z=('y', 'x'))
-        vars_list_xr = []
-        for v in model_vars_xr:
-            vars_list_xr.append(func_dict[v](dat_xr).stack(z=('y', 'x')))
-        bm_xr = xr.apply_ufunc(pred_func,
-                               *vars_list_xr,
-                               kwargs=dict(mod_vars_np=np.array(model_vars_xr)),
-                               dask='parallelized',
-                               vectorize=True,
-                               input_core_dims=dims,
-                               output_core_dims=[dims[0]],
-                               output_dtypes=['float32'])
-        return bm_xr.unstack('z')
-
-    #bm_out = pred_func_xr(dat_masked, model_vars, dims_list)
-    se_out = dat_masked.map_blocks(pred_func_xr, kwargs=dict(model_vars_xr=model_vars), template=dat_masked['RED'])
-
-    return se_out
-
-
-def pred_bm_thresh2(dat, model, thresh_kg):
-    model_vars = [n for n in model.params.index if ":" not in n and "Intercept" not in n]
-
-    dat_masked = dat.where(dat.notnull)
-
-    #dims_list = [[dim] for v in model_vars]
-
-    def pred_func(*args, mod_vars_np):
-        mask = np.any(np.isnan(args), axis=0)
-        vars_dict_np = {}
-        for idx, v in enumerate(mod_vars_np):
-            vars_dict_np[v] = args[idx]
-        #print(vars_dict_np)
-        bm_np = model.predict(vars_dict_np)
-        se_np = model.get_prediction(vars_dict_np).se_obs
-        thresh_pre = (np.log(thresh_kg) - bm_np) / se_np
-        thresh_np = np.ones_like(args[0]) * np.nan
-        thresh_np[~mask] = st.norm.cdf(thresh_pre)
-        #print(bm_np)
-        return thresh_np.astype('float32')
-
-    def pred_func_xr(dat_xr, model_vars_xr):
-        dims = [['z'] for v in model_vars]
-        #dat_xr = dat_xr.stack(z=('y', 'x'))
-        vars_list_xr = []
-        for v in model_vars_xr:
-            vars_list_xr.append(func_dict[v](dat_xr).stack(z=('y', 'x')))
-        bm_xr = xr.apply_ufunc(pred_func,
-                               *vars_list_xr,
-                               kwargs=dict(mod_vars_np=np.array(model_vars_xr)),
-                               dask='parallelized',
-                               vectorize=True,
-                               input_core_dims=dims,
-                               output_core_dims=[dims[0]],
-                               output_dtypes=['float32'])
-        return bm_xr.unstack('z')
-
-    #bm_out = pred_func_xr(dat_masked, model_vars, dims_list)
-    se_out = dat_masked.map_blocks(pred_func_xr, kwargs=dict(model_vars_xr=model_vars), template=dat_masked['RED'])
-
-    return se_out
-
-
-def pred_cov_sma(dat, ends_dict):
-    end_classes = list(ends_dict.keys())
-    end_vars = list(ends_dict[end_classes[0]].keys())
-    end_vals = np.array([list(ends_dict[c].values()) for c in end_classes])
-
-    def pred_unmix(*args, ends, idx):
-        mat = np.array(args).T
-        unmixed = amaps.UCLS(mat, np.array(ends[0]))
-        unmixed[unmixed < 0] = 0
-        unmixed[unmixed > 1.0] = 1.0
-        return unmixed[:, idx]
-
-    def pred_unmix_xr(dat_xr, ends, idx, name):
-        dat_xr = dat_xr.stack(z=('y', 'x'))
-        dims_list = [['z'] for c in end_vars]
-        vars_list_xr = []
-        for v in end_vars:
-            vars_list_xr.append(func_dict[v](dat_xr))
-        unmixed_xr = xr.apply_ufunc(pred_unmix,
-                                    *vars_list_xr,
-                                    dask='parallelized',
-                                    vectorize=True,
-                                    input_core_dims=dims_list,
-                                    output_core_dims=[dims_list[0]],
-                                    output_dtypes=['float32'],
-                                    kwargs=dict(ends=ends, idx=idx))
-        unmixed_xr = unmixed_xr.assign_coords(type=name)
-        return unmixed_xr.unstack('z')
-
-    covArrays = []
-    for idx, c in enumerate(end_classes):
-        covArrays.append(pred_unmix_xr(dat, ends=[end_vals], idx=idx, name=c))
-
-    dat_cov = xr.concat(covArrays, dim='type', join='override', combine_attrs='drop')
-    #dat_cov['type'] = [c for c in end_classes]
-    dat_cov = dat_cov.to_dataset(dim='type')
-    return dat_cov
-
-
-
-
-
-
-def pred_cov_sma2(dat, ends_dict):
-    end_classes = list(ends_dict.keys())
-    end_vars = list(ends_dict[end_classes[0]].keys())
-    end_vals = np.array([list(ends_dict[c].values()) for c in end_classes])
-
-    def pred_unmix(*args, ends, idx):
-        mat = np.array(args).T
-        unmixed = amaps.UCLS(mat, np.array(ends[0]))
-        unmixed[unmixed < 0] = 0
-        unmixed[unmixed > 1.0] = 1.0
-        return unmixed[:, idx]
-
-    def pred_unmix_xr(dat_xr, ends, idx, name):
-        dims = [['z'] for c in end_vars]
-        vars_list_xr = []
-        for v in end_vars:
-            vars_list_xr.append(func_dict[v](dat_xr).stack(z=('y', 'x')))
-        unmixed_xr = xr.apply_ufunc(pred_unmix,
-                                    *vars_list_xr,
-                                    dask='parallelized',
-                                    vectorize=True,
-                                    input_core_dims=dims,
-                                    output_core_dims=[dims[0]],
-                                    output_dtypes=['float32'],
-                                    kwargs=dict(ends=ends, idx=idx))
-        #unmixed_xr = unmixed_xr.assign_coords(type=name)
-        return unmixed_xr.unstack('z')
-
-    covArrays = []
-    for idx, c in enumerate(end_classes):
-        covArrays.append(dat.map_blocks(pred_unmix_xr, kwargs=dict(ends=[end_vals], idx=idx, name=c),
-                                        template=dat['RED']).assign_coords(type=c))
-
-    dat_cov = xr.concat(covArrays, dim='type', join='override', combine_attrs='drop')
-    #dat_cov['type'] = [c for c in end_classes]
-    dat_cov = dat_cov.to_dataset(dim='type')
-    return dat_cov
+    return cp_out
