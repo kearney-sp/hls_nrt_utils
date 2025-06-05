@@ -226,7 +226,7 @@ def pred_cp(dat, model):
         # get length of time series
         b = len(ndvi_ts_mean)
         
-        if sum(np.isnan(ndvi_ts_mean)) < b*0.5:
+        if (sum(np.isnan(ndvi_ts_mean)) < b*0.5) and (sum(~np.isnan(ndvi_ts_mean[10:75])) > 0):
             try:
                 # calculate start of season and base ndvi
                 ndvi_thresh1 = np.nanpercentile(ndvi_ts_mean[91:201], 40.0)
@@ -294,11 +294,12 @@ def pred_cp(dat, model):
             cp_features = df_pheno[['NDVI', 'NDVI_d30', 'iNDVI', 't_SOS', 'iNDVI_dry']]
             try:
                 # apply the random forest model
-                df_pheno['CP_pred'] = rf_cp.predict(cp_features)
+                df_pheno['CP_pred'] = model.predict(cp_features)
                 df_pheno['CP_pred'] = df_pheno['CP_pred'].rolling(7, center=False).mean()
                 cp_out = df_pheno['CP_pred'].values
                 cp_out[df_pheno['t_SOS'] < 0] = np.nan
-            except:
+            except Exception as e: 
+                print(e)
                 print("An error occurred!")
                 cp_out = np.ones_like(ndvi_ts) * np.nan
                 
