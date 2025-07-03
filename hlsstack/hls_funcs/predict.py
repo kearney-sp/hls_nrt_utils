@@ -201,7 +201,7 @@ def pred_cov(dat, model):
 
 
 def pred_cp(dat, model):
-    dat_masked = dat.where(dat.notnull())
+    #dat_masked = dat.where(dat.notnull())
 
     def pheno_fq_metrics(ndvi_ts_mean):
     
@@ -281,13 +281,16 @@ def pred_cp(dat, model):
                 )
                 return df_out
             # return all NaN values if an IndexError occurs - this is usually due to inability to get thresholds
-            except IndexError:
+            #except IndexError:
+            except Exception as e: 
+                #print(e)
                 return np.ones_like(ndvi_ts_mean) * np.nan
         else:
             return np.ones_like(ndvi_ts_mean) * np.nan
     
     def pred_func(ndvi_ts):
         if np.all(np.isnan(ndvi_ts)):
+            #print('all NaN found')
             cp_out = np.ones_like(ndvi_ts) * np.nan
         else:
             with warnings.catch_warnings():
@@ -316,7 +319,7 @@ def pred_cp(dat, model):
 
     def pred_func_xr(dat_xr):
         cp_xr = xr.apply_ufunc(pred_func,
-                               *[dat_xr],
+                               dat_xr,
                                dask='parallelized',
                                vectorize=True,
                                input_core_dims=[['time']],
@@ -325,6 +328,6 @@ def pred_cp(dat, model):
                               )
         return cp_xr
 
-    cp_out_xr = pred_func_xr(dat_masked)
+    cp_out_xr = pred_func_xr(dat)
 
     return cp_out_xr
