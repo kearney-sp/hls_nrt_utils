@@ -86,6 +86,7 @@ def pred_bm(dat, model):
 
 
 def pred_bm_se(dat, model, mod_boot_dir, nboot=100, avg_std=145.21):
+    # see https://doi.org/10.1016/j.jbusres.2016.03.049
     mod_list = glob.glob(os.path.join(mod_boot_dir,'*.pk'))
     model_vars = model.feature_names_in_
     dat_masked = dat.where(dat.notnull)
@@ -286,26 +287,31 @@ def pred_cp(dat, model):
             return np.ones_like(ndvi_ts_mean) * np.nan
     
     def pred_func(ndvi_ts):
-        # create the phenologic metrics
-        df_pheno = pheno_fq_metrics(ndvi_ts)
-        # apply the model (if successfully output phenologic metrics)
-        if type(df_pheno) is pd.DataFrame and not np.any(np.isnan(df_pheno)):
-            # get the features for the model
-            cp_features = df_pheno[['NDVI', 'NDVI_d30', 'iNDVI', 't_SOS', 'iNDVI_dry']]
-            try:
-                # apply the random forest model
-                df_pheno['CP_pred'] = model.predict(cp_features)
-                df_pheno['CP_pred'] = df_pheno['CP_pred'].rolling(7, center=False).mean()
-                cp_out = df_pheno['CP_pred'].values
-                cp_out[df_pheno['t_SOS'] < 0] = np.nan
-            except Exception as e: 
-                print(e)
-                print("An error occurred!")
-                cp_out = np.ones_like(ndvi_ts) * np.nan
-                
-        # if outputting the phenologic metrics failed, return all NaN values
-        else:
+        if np.all(np.isnan(ndvi_ts)):
             cp_out = np.ones_like(ndvi_ts) * np.nan
+        else:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=RuntimeWarning)
+                # create the phenologic metrics
+                df_pheno = pheno_fq_metrics(ndvi_ts)
+                # apply the model (if successfully output phenologic metrics)
+                if type(df_pheno) is pd.DataFrame and not np.any(np.isnan(df_pheno)):
+                    # get the features for the model
+                    cp_features = df_pheno[['NDVI', 'NDVI_d30', 'iNDVI', 't_SOS', 'iNDVI_dry']]
+                    try:
+                        # apply the random forest model
+                        df_pheno['CP_pred'] = model.predict(cp_features)
+                        df_pheno['CP_pred'] = df_pheno['CP_pred'].rolling(7, center=False).mean()
+                        cp_out = df_pheno['CP_pred'].values
+                        cp_out[df_pheno['t_SOS'] < 0] = np.nan
+                    except Exception as e: 
+                        print(e)
+                        print("An error occurred!")
+                        cp_out = np.ones_like(ndvi_ts) * np.nan
+                
+                # if outputting the phenologic metrics failed, return all NaN values
+                else:
+                    cp_out = np.ones_like(ndvi_ts) * np.nan
         return cp_out
 
     def pred_func_xr(dat_xr):

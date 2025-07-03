@@ -223,3 +223,42 @@ def despike_ts_xr(dat, dat_thresh, dims, days_thresh=60, z_thresh=3.5, mask_outl
                            output_dtypes=[float])
     return xr_ds.transpose('time', 'y', 'x')
 
+
+def adapt_smooth(ts, dates, despike=True, dat_thresh=None, days_thresh=45):
+    ct_valid = sum(~np.isnan(ts))
+    ct_total = len(ts)
+    avg_gap = ct_total/ct_valid
+    if ct_valid > 0:
+        if avg_gap > 15:
+            despike = False
+        if despike:
+            if dat_thresh is None:
+                _dat_thresh = np.ptp(ts) * 0.10
+            else:
+                _dat_thresh = dat_thresh
+            ts_ds = despike_ts(ts, dat_thresh=_dat_thresh, days_thresh=days_thresh)
+        else:
+            ts_ds = ts
+        if avg_gap > 10:
+            ts_smooth = double_savgol(ts_ds, double=True, window1_max=7, window2=31, limit=91)
+        elif avg_gap > 7:
+             ts_smooth = double_savgol(ts_ds, double=True, window1_max=5, window2=41, limit=91)
+        elif avg_gap > 5:
+             ts_smooth = double_savgol(ts_ds, double=True, window1_max=5, window2=51, limit=91)
+        else:
+            ts_smooth = double_savgol(ts_ds, double=False, window2=51, limit=91)
+    else:
+        ts_smooth = ts
+    return ts_smooth
+
+
+def adapt_smooth_xr(dat, dims, time_dim='time'):
+    dates = pd.to_datetime(dat[time_dim])
+    xr_smoothed = xr.apply_ufunc(adapt_smooth,
+                                 dat,
+                                 kwargs={'dates': dates, 'despike': True, 'dat_thresh': None, 'days_thresh': 45},
+                                 input_core_dims=[dims],
+                                 output_core_dims=[dims],
+                                 dask='parallelized', vectorize=True,
+                                 output_dtypes=[float])
+    return xr_smoothed.transpose('time', 'y', 'x')
