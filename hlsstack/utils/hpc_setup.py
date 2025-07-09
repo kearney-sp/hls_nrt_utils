@@ -16,9 +16,10 @@ def launch_dask(cluster_loc='local',
                 extra_directives=[],
                 worker_args=["--lifetime", "2h", "--lifetime-stagger", "4m"],
                 duration='02:00:00',
-                wait_for_workers=True,
+                wait_for_workers=False,
                 wait_proportion=0.5,
                 wait_timeout=120,
+                use_nanny=True,
                 debug=False):
     if cluster_loc == 'local':
         print('   setting up Local cluster...')
@@ -59,8 +60,10 @@ def launch_dask(cluster_loc='local',
                                     local_directory='$TMPDIR',
                                     death_timeout=wait_timeout,
                                     walltime=duration,
+                                    nanny=use_nanny,
                                     job_extra_directives=["--nodes=1"] + output_cmd + extra_directives,
-                                    worker_extra_args=worker_args)
+                                    worker_extra_args=worker_args
+                                   )
         else:
             clust = jq.SLURMCluster(queue=partition,
                                     processes=num_processes,
@@ -72,6 +75,7 @@ def launch_dask(cluster_loc='local',
                                     local_directory='$TMPDIR',
                                     death_timeout=wait_timeout,
                                     walltime=duration,
+                                    nanny=use_nanny,
                                     job_extra=["--nodes=1"] + output_cmd + extra_directives,
                                     extra=worker_args
                                     )
@@ -79,7 +83,7 @@ def launch_dask(cluster_loc='local',
         client=Client(clust)
         #Scale Cluster 
         #clust.scale(jobs=num_jobs)
-        clust.adapte(minimum=0, maximum=num_jobs*2)
+        clust.adapt(minimum=0, maximum=num_jobs*2)
         if wait_for_workers:
             try:
                 client.wait_for_workers(n_workers=int(num_jobs*num_processes*wait_proportion), timeout=wait_timeout)
