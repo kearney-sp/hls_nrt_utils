@@ -26,7 +26,7 @@ def launch_dask(cluster_loc='local',
         if hls:
             from hlsstack.hls_funcs import fetch
             fetch.setup_env(aws=aws)
-        cluster = LocalCluster(n_workers=num_processes,
+        cluster = LocalCluster(n_workers=num_processes*num_jobs,
                                threads_per_worker=num_threads_per_processes)
         client = Client(cluster)
         display(client)
