@@ -23,6 +23,8 @@ def launch_dask(cluster_loc='local',
                 debug=False):
     if cluster_loc == 'local':
         print('   setting up Local cluster...')
+        import dask
+        dask.config.set({'distributed.worker.daemon': False})
         if hls:
             from hlsstack.hls_funcs import fetch
             fetch.setup_env(aws=aws)
