@@ -61,7 +61,7 @@ def pred_bm(dat, model):
         # replace any infinite values with nan
         df_vars.replace([np.inf, -np.inf], np.nan, inplace=True)
         bm_np = np.ones_like(args[0]) * np.nan
-        mask = np.any(np.isnan(args), axis=0)
+        mask = np.any(~np.isfinite(args), axis=0)
         if len(df_vars[model.feature_names_in_].dropna(how='any')) > 0:
             bm_np[~mask] = model.predict(df_vars[model.feature_names_in_].dropna(how='any'))
         return bm_np.astype('int16')
@@ -99,8 +99,9 @@ def pred_bm_se(dat, model, mod_boot_dir, nboot=100, avg_std=145.21):
         for idx, v in enumerate(mod_vars_np):
             vars_dict_np[v] = args[idx]
         df_vars = pd.DataFrame(vars_dict_np, columns=mod_vars_np)
+        df_vars.replace([np.inf, -np.inf], np.nan, inplace=True)
         se_np = np.ones_like(args[0]) * np.nan
-        mask = np.any(np.isnan(args), axis=0)
+        mask = np.any(~np.isfinite(args), axis=0)
         if len(df_vars[model.feature_names_in_].dropna(how='any')) > 0:
             rand_mod_idx = random.sample(range(len(mod_list)), nboot)
             preds = []
