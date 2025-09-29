@@ -87,7 +87,7 @@ def pred_bm(dat, model):
     return bm_out
 
 
-def pred_bm_se(dat, model, mod_boot_dir, nboot=100, avg_std=145.21):
+def pred_bm_se(dat, model, mod_boot_dir, nboot=100, avg_std=144.61):
     # see https://doi.org/10.1016/j.jbusres.2016.03.049
     mod_list = glob.glob(os.path.join(mod_boot_dir,'*.pk'))
     model_vars = model.feature_names_in_

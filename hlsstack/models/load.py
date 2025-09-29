@@ -2,11 +2,12 @@ import pickle
 from pkg_resources import resource_filename
 
 model_dict = {
-    'cper_biomass': resource_filename('hlsstack', 'models/CPER_HLS_to_VOR_biomass_model_pls_20241015.pk'),
+    'cper_biomass': resource_filename('hlsstack', 'models/CPER_HLS_to_VOR_biomass_model_pls_20250929.pk'),
     'cper_cover': resource_filename('hlsstack', 'models/CPER_HLS_to_LPI_cover_model_20250205.pk'),
     'cper_cp': resource_filename('hlsstack', 'models/CPER_HLS_cp_ndvi_2014_2023.pk'),
     'cper_cover_old': resource_filename('hlsstack', 'models/CPER_HLS_to_LPI_cover_pls_binned_model.pk'),
-    'cper_biomass_old': resource_filename('hlsstack', 'models/CPER_HLS_to_VOR_biomass_model_lr_simp.pk')
+    'cper_biomass_old_lm': resource_filename('hlsstack', 'models/CPER_HLS_to_VOR_biomass_model_lr_simp.pk'),
+    'cper_biomass_old_pls': resource_filename('hlsstack', 'models/CPER_HLS_to_VOR_biomass_model_pls_20241015.pk')
 }
 
 def load_model(model_name):
