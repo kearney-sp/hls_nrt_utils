@@ -1,4 +1,5 @@
 import pickle
+import numpy as np
 from pkg_resources import resource_filename
 
 model_dict = {
@@ -14,3 +15,15 @@ model_dict = {
 def load_model(model_name):
    model = pickle.load(open(model_dict[model_name], 'rb'))
    return model
+
+def xfrm_y(y):
+    x = y.copy()
+    x[np.where(x > 0)] = np.sqrt(x[np.where(x > 0)])
+    x[np.where(x <= 0)] = 0.0
+    return x
+
+def bxfrm_y(y):
+    x = y.copy()
+    x[np.where(x > 0)] = x[np.where(x > 0)]**2
+    x[np.where(x <= 0)] = 0.0
+    return x
