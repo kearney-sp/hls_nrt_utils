@@ -3,7 +3,7 @@ import numpy as np
 from pkg_resources import resource_filename
 
 model_dict = {
-    'cper_biomass': resource_filename('hlsstack', 'models/CPER_HLS_to_VOR_biomass_model_pls_20250929.pk'),
+    'cper_biomass': resource_filename('hlsstack', 'models/CPER_HLS_to_VOR_biomass_model_pls_20260323.pk'),
     'cper_cover': resource_filename('hlsstack', 'models/CPER_HLS_to_LPI_cover_model_20250205.pk'),
     'cper_cp': resource_filename('hlsstack', 'models/CPER_HLS_cp_ndvi_2014_2023.pk'),
     'tbng_biomass': resource_filename('hlsstack', 'models/TB_HLS_to_VOR_biomass_model_pls_20260319.pk'),
