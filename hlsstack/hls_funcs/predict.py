@@ -190,9 +190,10 @@ def pred_cov(dat, model):
             preds = pls2_mod.predict(mat2).astype(np.float32)
             np.clip(preds, 0, 1, out=preds)  # in-place clip saves an allocation
             unmixed[valid_mask, :] = preds
+            del mat2, preds
 
         # Explicitly delete intermediates
-        del mat, mat2, preds, valid_mask
+        del mat, valid_mask
         return unmixed[:, 0], unmixed[:, 1], unmixed[:, 2], unmixed[:, 3]
 
     def pred_cov_xr(dat_xr, name):
