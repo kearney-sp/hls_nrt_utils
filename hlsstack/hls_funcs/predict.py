@@ -168,40 +168,53 @@ def pred_bm_thresh(dat_bm, dat_se, thresh_kg):
 
 def pred_cov(dat, model):
     pls2_mod = model
-
     band_list = ['BLUE', 'GREEN', 'RED', 'NIR1', 'SWIR1', 'SWIR2',
                  'DFI', 'NDVI', 'NDTI', 'SATVI', 'NDII7',
-                 'BAI_126', 'BAI_136', 'BAI_146', 'BAI_236', 'BAI_246', 'BAI_346']   
-    
+                 'BAI_126', 'BAI_136', 'BAI_146', 'BAI_236', 'BAI_246', 'BAI_346']
+
+    # Pre-fit PolynomialFeatures ONCE outside the inner function
+    poly = PolynomialFeatures(2)
+    dummy = np.zeros((1, len(band_list)))
+    poly.fit(dummy)  # fit on correct number of features
+
     def pred_cov_np(*args):
-        mat = np.array(args).T
-        mat = np.where(np.isfinite(mat) & (np.abs(mat) <= np.finfo(np.float32).max), mat, np.nan)
-        unmixed = np.ones((mat.shape[0], 4)) * np.nan
-        if mat[~np.any(np.isnan(mat), axis=1), :].shape[0] > 0:
-            mat2 = PolynomialFeatures(2).fit_transform(mat[~np.any(np.isnan(mat), axis=1), :])
-            unmixed[~np.any(np.isnan(mat), axis=1), :] = pls2_mod.predict(mat2)
-            unmixed[np.where(unmixed < 0)] = 0
-            unmixed[np.where(unmixed > 1)] = 1
+        mat = np.stack(args, axis=-1)  # cleaner than np.array(args).T
+        max_f32 = np.finfo(np.float32).max
+        mat = np.where(np.isfinite(mat) & (np.abs(mat) <= max_f32), mat, np.nan)
+
+        unmixed = np.full((mat.shape[0], 4), np.nan, dtype=np.float32)
+        valid_mask = ~np.any(np.isnan(mat), axis=1)
+
+        if valid_mask.any():
+            mat2 = poly.transform(mat[valid_mask, :])  # transform only, no fit
+            preds = pls2_mod.predict(mat2).astype(np.float32)
+            np.clip(preds, 0, 1, out=preds)  # in-place clip saves an allocation
+            unmixed[valid_mask, :] = preds
+
+        # Explicitly delete intermediates
+        del mat, mat2, preds, valid_mask
         return unmixed[:, 0], unmixed[:, 1], unmixed[:, 2], unmixed[:, 3]
 
     def pred_cov_xr(dat_xr, name):
         dat_xr = dat_xr.stack(z=('y', 'x'))
-        vars_list_xr = []
-        for v in band_list:
-            vars_list_xr.append(func_dict[v](dat_xr))
-        unmixed_xr = xr.apply_ufunc(pred_cov_np,
-                                    *vars_list_xr,
-                                    dask='parallelized',
-                                    vectorize=True,
-                                    input_core_dims=np.repeat(['z'], len(band_list)),
-                                    output_core_dims=['z', 'z', 'z', 'z'],
-                                    output_dtypes=['float32', 'float32', 'float32', 'float32'])
+        vars_list_xr = [func_dict[v](dat_xr) for v in band_list]
+
+        # Use separate unique dimension names for each output
+        unmixed_xr = xr.apply_ufunc(
+            pred_cov_np,
+            *vars_list_xr,
+            dask='parallelized',
+            vectorize=False,  # pred_cov_np already handles the full array
+            input_core_dims=[['z']] * len(band_list),
+            output_core_dims=[['z'], ['z'], ['z'], ['z']],
+            output_dtypes=['float32', 'float32', 'float32', 'float32']
+        )
+
         cov_xr = xr.concat(unmixed_xr, dim='type').unstack('z')
         cov_xr = cov_xr.assign_coords(type=name)
         return cov_xr.to_dataset(dim='type')
 
-    dat_cov = pred_cov_xr(dat, name=['BARE', 'SD', 'GREEN', 'LITT'])
-    return dat_cov
+    return pred_cov_xr(dat, name=['BARE', 'SD', 'GREEN', 'LITT'])
 
 
 def pred_cp(dat, model):
