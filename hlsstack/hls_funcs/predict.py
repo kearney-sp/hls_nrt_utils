@@ -172,29 +172,36 @@ def pred_cov(dat, model):
                  'DFI', 'NDVI', 'NDTI', 'SATVI', 'NDII7',
                  'BAI_126', 'BAI_136', 'BAI_146', 'BAI_236', 'BAI_246', 'BAI_346']
 
-    # Pre-fit PolynomialFeatures ONCE outside the inner function
+    ## Pre-fit PolynomialFeatures ONCE outside the inner function
     poly = PolynomialFeatures(2)
-    dummy = np.zeros((1, len(band_list)))
-    poly.fit(dummy)  # fit on correct number of features
-
+    poly.fit(np.zeros((1, len(band_list))))
+    
     def pred_cov_np(*args):
-        mat = np.stack(args, axis=-1)  # cleaner than np.array(args).T
+        # args are each (time, z) — stack along new last axis to get (time, z, bands)
+        mat = np.stack(args, axis=-1).astype(np.float32)
+        
+        time_steps, n_pixels, n_bands = mat.shape
         max_f32 = np.finfo(np.float32).max
-        mat = np.where(np.isfinite(mat) & (np.abs(mat) <= max_f32), mat, np.nan)
-
-        unmixed = np.full((mat.shape[0], 4), np.nan, dtype=np.float32)
-        valid_mask = ~np.any(np.isnan(mat), axis=1)
-
-        if valid_mask.any():
-            mat2 = poly.transform(mat[valid_mask, :])  # transform only, no fit
-            preds = pls2_mod.predict(mat2).astype(np.float32)
-            np.clip(preds, 0, 1, out=preds)  # in-place clip saves an allocation
-            unmixed[valid_mask, :] = preds
-            del mat2, preds
-
-        # Explicitly delete intermediates
-        del mat, valid_mask
-        return unmixed[:, 0], unmixed[:, 1], unmixed[:, 2], unmixed[:, 3]
+        
+        # Output: (4, time, z)
+        unmixed = np.full((4, time_steps, n_pixels), np.nan, dtype=np.float32)
+        
+        for t in range(time_steps):
+            mat_t = mat[t]  # (z, bands)
+            mat_t = np.where(np.isfinite(mat_t) & (np.abs(mat_t) <= max_f32), mat_t, np.nan)
+            valid_mask = ~np.any(np.isnan(mat_t), axis=1)
+            
+            if valid_mask.any():
+                mat2 = poly.transform(mat_t[valid_mask, :])
+                preds = pls2_mod.predict(mat2).astype(np.float32)
+                np.clip(preds, 0, 1, out=preds)
+                unmixed[:, t, valid_mask] = preds.T
+                del mat2, preds
+            
+            del mat_t, valid_mask
+        
+        del mat
+        return unmixed[0], unmixed[1], unmixed[2], unmixed[3]  # each (time, z)
 
     def pred_cov_xr(dat_xr, name):
         dat_xr = dat_xr.stack(z=('y', 'x'))
@@ -205,10 +212,10 @@ def pred_cov(dat, model):
             pred_cov_np,
             *vars_list_xr,
             dask='parallelized',
-            vectorize=False,  # pred_cov_np already handles the full array
-            input_core_dims=[['z']] * len(band_list),
-            output_core_dims=[['z'], ['z'], ['z'], ['z']],
-            output_dtypes=['float32', 'float32', 'float32', 'float32']
+            vectorize=False,
+            input_core_dims=[['time', 'z']] * len(band_list),
+            output_core_dims=[['time', 'z']] * 4,
+            output_dtypes=['float32'] * 4
         )
 
         cov_xr = xr.concat(unmixed_xr, dim='type').unstack('z')
