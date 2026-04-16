@@ -171,10 +171,11 @@ def pred_cov(dat, model):
 
     band_list = ['BLUE', 'GREEN', 'RED', 'NIR1', 'SWIR1', 'SWIR2',
                  'DFI', 'NDVI', 'NDTI', 'SATVI', 'NDII7',
-                 'BAI_126', 'BAI_136', 'BAI_146', 'BAI_236', 'BAI_246', 'BAI_346']
-
+                 'BAI_126', 'BAI_136', 'BAI_146', 'BAI_236', 'BAI_246', 'BAI_346']   
+    
     def pred_cov_np(*args):
         mat = np.array(args).T
+        mat = np.where(np.isfinite(mat) & (np.abs(mat) <= np.finfo(np.float32).max), mat, np.nan)
         unmixed = np.ones((mat.shape[0], 4)) * np.nan
         if mat[~np.any(np.isnan(mat), axis=1), :].shape[0] > 0:
             mat2 = PolynomialFeatures(2).fit_transform(mat[~np.any(np.isnan(mat), axis=1), :])
