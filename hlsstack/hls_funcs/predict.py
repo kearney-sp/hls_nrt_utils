@@ -172,7 +172,7 @@ def pred_bm_thresh(dat_bm, dat_se, thresh_kg):
 
 
 def pred_cov(dat, model):
-    pls2_mod = model
+    model_vars = model.feature_names_in_
     band_list = ['BLUE', 'GREEN', 'RED', 'NIR1', 'SWIR1', 'SWIR2',
                  'DFI', 'NDVI', 'NDTI', 'SATVI', 'NDII7',
                  'BAI_126', 'BAI_136', 'BAI_146', 'BAI_236', 'BAI_246', 'BAI_346']
@@ -197,8 +197,8 @@ def pred_cov(dat, model):
             valid_mask = ~df_t.isna().any(axis=1).values
             
             if valid_mask.any():
-                #preds = pls2_mod.predict(mat_t[valid_mask, :]).astype(np.float32)
-                preds = pls2_mod.predict(df_t[valid_mask]).astype(np.float32)
+                #preds = model.predict(mat_t[valid_mask, :]).astype(np.float32)
+                preds = model.predict(df_t[valid_mask]).astype(np.float32)
                 np.clip(preds, 0, 1, out=preds)
                 unmixed[:, t, valid_mask] = preds.T
                 del preds
