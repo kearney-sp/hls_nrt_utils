@@ -190,13 +190,18 @@ def pred_cov(dat, model):
         for t in range(time_steps):
             mat_t = mat[t]  # (z, bands)
             mat_t = np.where(np.isfinite(mat_t) & (np.abs(mat_t) <= max_f32), mat_t, np.nan)
-            valid_mask = ~np.any(np.isnan(mat_t), axis=1)
+            #valid_mask = ~np.any(np.isnan(mat_t), axis=1)
+
+            # Restore DataFrame to satisfy StandardScaler's feature name expectation
+            df_t = pd.DataFrame(mat_t, columns=model_vars)
+            valid_mask = ~df_t.isna().any(axis=1).values
             
             if valid_mask.any():
-                preds = pls2_mod.predict(mat_t[valid_mask, :]).astype(np.float32)
+                #preds = pls2_mod.predict(mat_t[valid_mask, :]).astype(np.float32)
+                preds = pls2_mod.predict(df_t[valid_mask]).astype(np.float32)
                 np.clip(preds, 0, 1, out=preds)
                 unmixed[:, t, valid_mask] = preds.T
-                del mat2, preds
+                del preds
             
             del mat_t, valid_mask
         
