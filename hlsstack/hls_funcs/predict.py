@@ -59,14 +59,17 @@ def pred_bm(dat, model):
         for t in range(time_steps):
             mat_t = mat[t]
             mat_t = np.where(np.isfinite(mat_t) & (np.abs(mat_t) <= max_f32), mat_t, np.nan)
-            valid_mask = ~np.any(np.isnan(mat_t), axis=1)
+            
+            # Restore DataFrame to satisfy StandardScaler's feature name expectation
+            df_t = pd.DataFrame(mat_t, columns=model_vars)
+            valid_mask = ~df_t.isna().any(axis=1).values
 
             if valid_mask.any():
-                preds = model.predict(mat_t[valid_mask, :])
-                out[t, valid_mask] = preds.squeeze()  # PLS returns (n, 1) for single output
+                preds = model.predict(df_t[valid_mask])
+                out[t, valid_mask] = preds.squeeze()
                 del preds
 
-            del mat_t, valid_mask
+            del mat_t, df_t, valid_mask
 
         del mat
         return out.astype(np.int16)
