@@ -10,7 +10,6 @@ from hlsstack.hls_funcs.indices import *
 from pysptools.abundance_maps import amaps
 import scipy.stats as st
 from sklearn.cross_decomposition import PLSRegression
-from sklearn.preprocessing import PolynomialFeatures
 import dask
 import warnings
 #from sklearn.exceptions import InconsistentVersionWarning
@@ -48,43 +47,46 @@ func_dict = {
 
 
 def pred_bm(dat, model):
-    #model_vars = [n for n in model.params.index if ":" not in n and "Intercept" not in n]
-    model_vars = model.feature_names_in_
-    dat_masked = dat.where(dat.notnull())
+    model_vars = list(model.feature_names_in_)
 
-    def pred_func(*args, mod_vars_np):
-        #warnings.filterwarnings('ignore', category=InconsistentVersionWarning)
-        vars_dict_np = {}
-        for idx, v in enumerate(mod_vars_np):
-            vars_dict_np[v] = args[idx]
-        df_vars = pd.DataFrame(vars_dict_np, columns=mod_vars_np)
-        # replace any infinite values with nan
-        df_vars.replace([np.inf, -np.inf], np.nan, inplace=True)
-        bm_np = np.ones_like(args[0]) * np.nan
-        mask = np.any(~np.isfinite(args), axis=0)
-        if len(df_vars[model.feature_names_in_].dropna(how='any')) > 0:
-            bm_np[~mask] = model.predict(df_vars[model.feature_names_in_].dropna(how='any'))
-        return bm_np.astype('int16')
+    def pred_func(*args):
+        mat = np.stack(args, axis=-1).astype(np.float32)
+        time_steps, n_pixels, n_bands = mat.shape
+        max_f32 = np.finfo(np.float32).max
+
+        out = np.full((time_steps, n_pixels), np.nan, dtype=np.float32)
+
+        for t in range(time_steps):
+            mat_t = mat[t]
+            mat_t = np.where(np.isfinite(mat_t) & (np.abs(mat_t) <= max_f32), mat_t, np.nan)
+            valid_mask = ~np.any(np.isnan(mat_t), axis=1)
+
+            if valid_mask.any():
+                preds = model.predict(mat_t[valid_mask, :])
+                out[t, valid_mask] = preds.squeeze()  # PLS returns (n, 1) for single output
+                del preds
+
+            del mat_t, valid_mask
+
+        del mat
+        return out.astype(np.int16)
 
     def pred_func_xr(dat_xr, model_vars_xr):
-        dat_xr = dat_xr.stack(z=('y', 'x')).persist()
-        dims_list = [['z'] for v in model_vars_xr]
-        vars_list_xr = []
-        for v in model_vars_xr:
-            vars_list_xr.append(func_dict[v](dat_xr))
-        bm_xr = xr.apply_ufunc(pred_func,
-                               *vars_list_xr,
-                               kwargs=dict(mod_vars_np=np.array(model_vars_xr)),
-                               dask='parallelized',
-                               vectorize=True,
-                               input_core_dims=dims_list,
-                               output_core_dims=[dims_list[0]],
-                               output_dtypes=['int16'])
+        dat_xr = dat_xr.stack(z=('y', 'x'))
+        vars_list_xr = [func_dict[v](dat_xr) for v in model_vars_xr]
+
+        bm_xr = xr.apply_ufunc(
+            pred_func,
+            *vars_list_xr,
+            dask='parallelized',
+            vectorize=False,
+            input_core_dims=[['time', 'z']] * len(model_vars_xr),
+            output_core_dims=[['time', 'z']],
+            output_dtypes=['int16']
+        )
         return bm_xr.unstack('z')
 
-    bm_out = pred_func_xr(dat_masked, model_vars)
-
-    return bm_out
+    return pred_func_xr(dat, model_vars)
 
 
 def pred_bm_se(dat, model, mod_boot_dir, nboot=100, avg_std=144.61):
@@ -172,10 +174,6 @@ def pred_cov(dat, model):
                  'DFI', 'NDVI', 'NDTI', 'SATVI', 'NDII7',
                  'BAI_126', 'BAI_136', 'BAI_146', 'BAI_236', 'BAI_246', 'BAI_346']
 
-    ## Pre-fit PolynomialFeatures ONCE outside the inner function
-    poly = PolynomialFeatures(2)
-    poly.fit(np.zeros((1, len(band_list))))
-    
     def pred_cov_np(*args):
         # args are each (time, z) — stack along new last axis to get (time, z, bands)
         mat = np.stack(args, axis=-1).astype(np.float32)
@@ -192,8 +190,7 @@ def pred_cov(dat, model):
             valid_mask = ~np.any(np.isnan(mat_t), axis=1)
             
             if valid_mask.any():
-                mat2 = poly.transform(mat_t[valid_mask, :])
-                preds = pls2_mod.predict(mat2).astype(np.float32)
+                preds = pls2_mod.predict(mat_t[valid_mask, :]).astype(np.float32)
                 np.clip(preds, 0, 1, out=preds)
                 unmixed[:, t, valid_mask] = preds.T
                 del mat2, preds
