@@ -231,12 +231,6 @@ def pred_cov(dat, model):
 
 
 def pred_cp(dat, model):
-    if type(model_name) != str:
-        print('ERROR: pass only the model name as a string, not the entire model object.')
-
-    # Load model ONCE outside the pixel loop
-    #from hlsstack.models.load import load_model
-    #model = load_model(model_name)
 
     def running_mean(x, N):
         cumsum = np.nancumsum(np.insert(x, 0, 0))
