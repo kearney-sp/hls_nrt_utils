@@ -321,16 +321,19 @@ def pred_cp(dat, model):
             if pheno is None:
                 return np.full_like(ndvi_ts, np.nan, dtype='float32')
 
-            features = np.column_stack([
-                pheno['NDVI'],
-                pheno['NDVI_d30'],
-                pheno['iNDVI'],
-                pheno['t_SOS'],
-                pheno['iNDVI_dry'],
-            ])
+            features = pd.DataFrame(
+                np.column_stack([
+                    pheno['NDVI'],
+                    pheno['NDVI_d30'],
+                    pheno['iNDVI'],
+                    pheno['t_SOS'],
+                    pheno['iNDVI_dry'],
+                ]),
+                columns=feature_cols
+            )
 
             if np.any(np.isnan(features)):
-                return np.full_like(ndvi_ts, np.nan, dtype='float32')
+                return np.full_like(ndvi_ts, np.nan, dtype='float32')   
 
             try:
                 cp_pred = model.predict(features).astype('float32')
