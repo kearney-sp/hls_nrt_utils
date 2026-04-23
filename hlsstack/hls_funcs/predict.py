@@ -230,7 +230,146 @@ def pred_cov(dat, model):
     return pred_cov_xr(dat, name=['BARE', 'SD', 'GREEN', 'LITT'])
 
 
-def pred_cp(dat, model_name):
+def pred_cp(dat, model):
+    if type(model_name) != str:
+        print('ERROR: pass only the model name as a string, not the entire model object.')
+
+    # Load model ONCE outside the pixel loop
+    #from hlsstack.models.load import load_model
+    #model = load_model(model_name)
+
+    def running_mean(x, N):
+        cumsum = np.nancumsum(np.insert(x, 0, 0))
+        return (cumsum[N:] - cumsum[:-N]) / float(N)
+
+    def pheno_fq_metrics_vectorized(ndvi_ts_mean):
+        b = len(ndvi_ts_mean)
+
+        if (np.sum(np.isnan(ndvi_ts_mean)) >= b * 0.5) or (np.sum(~np.isnan(ndvi_ts_mean[10:75])) == 0):
+            return None
+
+        try:
+            ndvi_thresh1 = np.nanpercentile(ndvi_ts_mean[91:201], 40.0)
+            date_thresh1 = next(x for x in np.where(ndvi_ts_mean > ndvi_thresh1)[0] if x > 30)
+
+            dndvi_ts_mean = np.ones(b) * np.nan
+            dndvi_ts_mean[25:] = running_mean(np.diff(ndvi_ts_mean), 25)
+
+            mask = dndvi_ts_mean[:date_thresh1] > 0
+            dndvi_thresh2 = np.nanpercentile(dndvi_ts_mean[:date_thresh1][mask], 35.0)
+            sos = np.where(dndvi_ts_mean[:date_thresh1] < dndvi_thresh2)[0][-1]
+            ndvi_base = np.nanmean(ndvi_ts_mean[10:75])
+
+            # IGR: vectorized cumulative sum over rolling 30-day window
+            ndvi_d1 = np.diff(ndvi_ts_mean, prepend=ndvi_ts_mean[0])
+            # Use stride tricks for rolling sum instead of loop
+            d1_cumsum = np.nancumsum(ndvi_d1)
+            d1_cumsum_padded = np.concatenate([[0] * 30, d1_cumsum])
+            ndvi_d1_cum30 = d1_cumsum_padded[30:] - d1_cumsum_padded[:b]
+            ndvi_d1_cum30[np.isnan(ndvi_d1)] = np.nan
+
+            # Vectorized integrated NDVI (replaces Python loop)
+            ts_tmp = ndvi_ts_mean - ndvi_base
+            ts_tmp_cumsum = np.nancumsum(ts_tmp)
+            ndvi_int_ts = np.zeros(b)
+            ndvi_int_ts[sos:] = ts_tmp_cumsum[sos:] - ts_tmp_cumsum[sos] + ts_tmp[sos]
+            ndvi_int_ts[:sos] = 0.0
+
+            # Rate of change
+            ndvi_rate_ts = np.zeros(b)
+            denom = np.arange(b) - sos + 1
+            ndvi_rate_ts[sos:] = ndvi_int_ts[sos:] / denom[sos:]
+
+            # Vectorized dry biomass (replaces Python loop)
+            ndvi_max_running = np.maximum.accumulate(
+                np.where(np.isnan(ndvi_ts_mean), -np.inf, ndvi_ts_mean)
+            )
+            ndvi_max_running[:sos] = np.nan
+
+            decline = ndvi_d1 < 0
+            ndvi_dry_ts = np.zeros(b)
+            valid = decline & (ndvi_max_running > 0) & (np.arange(b) >= sos)
+            ndvi_dry_ts[valid] = (
+                -ndvi_d1[valid] / ndvi_max_running[valid]
+            ) * ndvi_int_ts[valid]
+
+            ndvi_int_dry_ts = np.nancumsum(ndvi_dry_ts)
+            ndvi_int_dry_ts[:sos] = 0.0
+
+            ndvi_int_dry_pct_ts = np.zeros(b)
+            nonzero = ndvi_int_ts != 0
+            ndvi_int_dry_pct_ts[nonzero] = ndvi_int_dry_ts[nonzero] / ndvi_int_ts[nonzero]
+
+            t_sos = np.arange(b) - sos
+
+            return {
+                'NDVI': ndvi_ts_mean,
+                'NDVI_d30': ndvi_d1_cum30,
+                'iNDVI': ndvi_int_ts,
+                'iNDVI_dry': ndvi_int_dry_ts,
+                'NDVI_rate': ndvi_rate_ts,
+                'iNDVI_dry_pct': ndvi_int_dry_pct_ts,
+                'SOS_doy': sos,
+                't_SOS': t_sos,
+            }
+
+        except Exception:
+            return None
+
+    def pred_func(ndvi_ts):
+        if np.all(np.isnan(ndvi_ts)):
+            return np.full_like(ndvi_ts, np.nan, dtype='float32')
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+
+            pheno = pheno_fq_metrics_vectorized(ndvi_ts)
+            if pheno is None:
+                return np.full_like(ndvi_ts, np.nan, dtype='float32')
+
+            features = np.column_stack([
+                pheno['NDVI'],
+                pheno['NDVI_d30'],
+                pheno['iNDVI'],
+                pheno['t_SOS'],
+                pheno['iNDVI_dry'],
+            ])
+
+            if np.any(np.isnan(features)):
+                return np.full_like(ndvi_ts, np.nan, dtype='float32')
+
+            try:
+                cp_pred = model.predict(features).astype('float32')
+
+                # Vectorized 7-day rolling mean
+                kernel = np.ones(7) / 7.0
+                # convolve and handle edges
+                cp_pred_smooth = np.convolve(cp_pred, kernel, mode='full')[:len(cp_pred)]
+                # first 6 values lack full window — mirror original rolling(7) behavior (NaN)
+                cp_pred_smooth[:6] = np.nan
+
+                cp_pred_smooth[pheno['t_SOS'] < 0] = np.nan
+                return cp_pred_smooth
+
+            except Exception as e:
+                print(e)
+                return np.full_like(ndvi_ts, np.nan, dtype='float32')
+
+    def pred_func_xr(dat_xr):
+        return xr.apply_ufunc(
+            pred_func,
+            dat_xr,
+            dask='parallelized',
+            vectorize=True,
+            input_core_dims=[['time']],
+            output_core_dims=[['time']],
+            output_dtypes=['float32'],
+        )
+
+    return pred_func_xr(dat)
+
+
+def pred_cp_old(dat, model_name):
     if type(model_name) != str:
         print('ERROR: pass only the model name as a string, not the entire model object.')
     #dat_masked = dat.where(dat.notnull())
