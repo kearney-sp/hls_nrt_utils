@@ -231,7 +231,14 @@ def pred_cov(dat, model):
 
 
 def pred_cp(dat, model):
-    
+    time_chunks = dat.chunks[dat.dims.index('time')]
+    if len(time_chunks) != 1:
+        raise ValueError(
+            f"Data must not be chunked along 'time'. "
+            f"Found {len(time_chunks)} time chunks. "
+            f"Re-chunk with dat.chunk({{'time': -1}}) before calling pred_cp()."
+        )
+        
     feature_cols = ['NDVI', 'NDVI_d30', 'iNDVI', 't_SOS', 'iNDVI_dry']
     
     def running_mean(x, N):
@@ -312,58 +319,46 @@ def pred_cp(dat, model):
         except Exception:
             return None
 
-    def pred_func(ndvi_ts):
-        if np.all(np.isnan(ndvi_ts)):
-            return np.full_like(ndvi_ts, np.nan, dtype='float32')
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=RuntimeWarning)
-
-            pheno = pheno_fq_metrics_vectorized(ndvi_ts)
-            if pheno is None:
-                return np.full_like(ndvi_ts, np.nan, dtype='float32')
-
-            features = pd.DataFrame(
-                np.column_stack([
-                    pheno['NDVI'],
-                    pheno['NDVI_d30'],
-                    pheno['iNDVI'],
-                    pheno['t_SOS'],
-                    pheno['iNDVI_dry'],
+    def pred_func_block(block):
+        arr = block.values
+        x, y, t = arr.shape
+        pixels = arr.reshape(-1, t)
+        out = np.full_like(pixels, np.nan, dtype='float32')
+    
+        # Compute pheno metrics for all pixels first
+        pheno_list = [pheno_fq_metrics_vectorized(px) for px in pixels]
+    
+        # Batch predict for all valid pixels at once
+        valid_idx = [i for i, p in enumerate(pheno_list) if p is not None]
+        if valid_idx:
+            batch_features = pd.DataFrame(
+                np.vstack([
+                    np.column_stack([
+                        pheno_list[i]['NDVI'], pheno_list[i]['NDVI_d30'],
+                        pheno_list[i]['iNDVI'], pheno_list[i]['t_SOS'],
+                        pheno_list[i]['iNDVI_dry'],
+                    ])
+                    for i in valid_idx
                 ]),
                 columns=feature_cols
             )
-
-            if np.any(np.isnan(features)):
-                return np.full_like(ndvi_ts, np.nan, dtype='float32')   
-
-            try:
-                cp_pred = model.predict(features).astype('float32')
-
-                # Vectorized 7-day rolling mean
-                kernel = np.ones(7) / 7.0
-                # convolve and handle edges
-                cp_pred_smooth = np.convolve(cp_pred, kernel, mode='full')[:len(cp_pred)]
-                # first 6 values lack full window — mirror original rolling(7) behavior (NaN)
-                cp_pred_smooth[:6] = np.nan
-
-                cp_pred_smooth[pheno['t_SOS'] < 0] = np.nan
-                return cp_pred_smooth
-
-            except Exception as e:
-                print(e)
-                return np.full_like(ndvi_ts, np.nan, dtype='float32')
-
+    
+            # One predict call for the entire chunk
+            all_preds = model.predict(batch_features).astype('float32')
+    
+            # Split predictions back out per pixel
+            for j, i in enumerate(valid_idx):
+                cp_pred = all_preds[j * t:(j + 1) * t]
+                cp_smooth = np.convolve(cp_pred, np.ones(7) / 7.0, mode='full')[:t]
+                cp_smooth[:6] = np.nan
+                cp_smooth[pheno_list[i]['t_SOS'] < 0] = np.nan
+                out[i] = cp_smooth
+    
+        return block.copy(data=out.reshape(x, y, t))
+    
+    
     def pred_func_xr(dat_xr):
-        return xr.apply_ufunc(
-            pred_func,
-            dat_xr,
-            dask='parallelized',
-            vectorize=True,
-            input_core_dims=[['time']],
-            output_core_dims=[['time']],
-            output_dtypes=['float32'],
-        )
+        return dat_xr.map_blocks(pred_func_block)
 
     return pred_func_xr(dat)
 
