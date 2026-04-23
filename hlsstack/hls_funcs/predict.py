@@ -231,7 +231,9 @@ def pred_cov(dat, model):
 
 
 def pred_cp(dat, model):
-
+    
+    feature_cols = ['NDVI', 'NDVI_d30', 'iNDVI', 't_SOS', 'iNDVI_dry']
+    
     def running_mean(x, N):
         cumsum = np.nancumsum(np.insert(x, 0, 0))
         return (cumsum[N:] - cumsum[:-N]) / float(N)
