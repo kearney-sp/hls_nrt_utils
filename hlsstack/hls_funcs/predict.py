@@ -358,7 +358,7 @@ def pred_cp(dat, model):
     
     
     def pred_func_xr(dat_xr):
-        return dat_xr.map_blocks(pred_func_block)
+        return dat_xr.map_blocks(pred_func_block, template=dat_xr)
 
     return pred_func_xr(dat)
 
