@@ -230,7 +230,9 @@ def pred_cov(dat, model):
     return pred_cov_xr(dat, name=['BARE', 'SD', 'GREEN', 'LITT'])
 
 
-def pred_cp(dat, model):
+def pred_cp(dat, model_name):
+    if type(model_name) != str:
+        print('ERROR: pass only the model name as a string, not the entire model object.')
     #dat_masked = dat.where(dat.notnull())
 
     def pheno_fq_metrics(ndvi_ts_mean):
@@ -325,6 +327,8 @@ def pred_cp(dat, model):
         else:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", category=RuntimeWarning)
+                from hlsstack.models.load import load_model
+                model = load_model(model_name)  # each worker loads its own copy
                 # create the phenologic metrics
                 df_pheno = pheno_fq_metrics(ndvi_ts)
                 # apply the model (if successfully output phenologic metrics)

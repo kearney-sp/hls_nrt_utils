@@ -1,4 +1,5 @@
-import pickle
+#import pickle
+import joblib
 import numpy as np
 from pkg_resources import resource_filename
 
@@ -13,7 +14,8 @@ model_dict = {
 }
 
 def load_model(model_name):
-   model = pickle.load(open(model_dict[model_name], 'rb'))
+    #model = pickle.load(open(model_dict[model_name], 'rb'))
+    model = joblib.load(model_dict[model_name])
    return model
 
 def xfrm_y(y):
