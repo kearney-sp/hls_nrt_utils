@@ -16,7 +16,7 @@ model_dict = {
 def load_model(model_name):
     #model = pickle.load(open(model_dict[model_name], 'rb'))
     model = joblib.load(model_dict[model_name])
-   return model
+    return model
 
 def xfrm_y(y):
     x = y.copy()
