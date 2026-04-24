@@ -355,10 +355,10 @@ def pred_cp(dat, model):
                 cp_smooth[pheno_list[i]['t_SOS'] < 0] = np.nan
                 out[i] = cp_smooth
         
-        # remove intermediate data
-        del batch_features, all_preds, pheno_list
-        # Force release of freed memory back to OS
-        ctypes.CDLL("libc.so.6").malloc_trim(0)
+            # remove intermediate data
+            del batch_features, all_preds, pheno_list
+            # Force release of freed memory back to OS
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
         
         return block.copy(data=out.reshape(x, y, t))
     
