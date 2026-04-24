@@ -321,16 +321,28 @@ def pred_cp(dat, model):
             return None
 
     def pred_func_block(block):
-        arr = block.values
+        time_ax = block.dims.index('time')
+        arr = np.moveaxis(block.values, time_ax, -1)
         x, y, t = arr.shape
         pixels = arr.reshape(-1, t)
         out = np.full_like(pixels, np.nan, dtype='float32')
     
-        # Compute pheno metrics for all pixels first
-        pheno_list = [pheno_fq_metrics_vectorized(px) for px in pixels]
+        # compute pheno metrics for all pixels first
+        pheno_list = [pheno_fq_metrics_vectorized(px) if not np.all(np.isnan(px)) else None 
+                      for px in pixels]
     
-        # Batch predict for all valid pixels at once
+        # collect valid indices and build batch feature matrix
         valid_idx = [i for i, p in enumerate(pheno_list) if p is not None]
+        
+        if valid_idx:
+            # check for NaNs per pixel and further filter
+            valid_idx = [i for i in valid_idx 
+                         if not np.any(np.isnan(np.column_stack([
+                             pheno_list[i]['NDVI'], pheno_list[i]['NDVI_d30'],
+                             pheno_list[i]['iNDVI'], pheno_list[i]['t_SOS'],
+                             pheno_list[i]['iNDVI_dry']
+                         ])))]
+    
         if valid_idx:
             batch_features = pd.DataFrame(
                 np.vstack([
@@ -344,23 +356,25 @@ def pred_cp(dat, model):
                 columns=feature_cols
             )
     
-            # One predict call for the entire chunk
-            all_preds = model.predict(batch_features).astype('float32')
+            try:
+                # one predict call for entire chunk
+                all_preds = model.predict(batch_features).astype('float32')
+                
+                # split back into per-pixel arrays of length t
+                # each pixel contributed exactly t rows so this is clean
+                split_preds = np.split(all_preds, len(valid_idx))
+                
+                for j, i in enumerate(valid_idx):
+                    cp_pred = split_preds[j]  # shape (t,)
+                    cp_smooth = np.convolve(cp_pred, np.ones(7) / 7.0, mode='full')[:t]
+                    cp_smooth[:6] = np.nan
+                    cp_smooth[pheno_list[i]['t_SOS'] < 0] = np.nan
+                    out[i] = cp_smooth
+            except Exception as e:
+                print(e)
     
-            # Split predictions back out per pixel
-            for j, i in enumerate(valid_idx):
-                cp_pred = all_preds[j * t:(j + 1) * t]
-                cp_smooth = np.convolve(cp_pred, np.ones(7) / 7.0, mode='full')[:t]
-                cp_smooth[:6] = np.nan
-                cp_smooth[pheno_list[i]['t_SOS'] < 0] = np.nan
-                out[i] = cp_smooth
-        
-            # remove intermediate data
-            del batch_features, all_preds, pheno_list
-            # Force release of freed memory back to OS
-            ctypes.CDLL("libc.so.6").malloc_trim(0)
-        
-        return block.copy(data=out.reshape(x, y, t))
+        result = np.moveaxis(out.reshape(x, y, t), -1, time_ax)
+        return block.copy(data=result)
     
     
     def pred_func_xr(dat_xr):
