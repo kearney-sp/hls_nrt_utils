@@ -152,9 +152,14 @@ def double_savgol_original(ts, double=True, window1_min_obs=11, window1_max=21,
         )
 
     ts_interp = pd.Series(ts_tmp)
-    ts_interp = ts_interp.interpolate(method='linear', limit_area='inside', limit=limit)
-    ts_interp = ts_interp.interpolate(method='linear', limit=None,
-                                      limit_direction='both', limit_area='outside')
+    ts_interp = ts_interp.interpolate(method='linear', 
+                                      limit=limit,
+                                      limit_direction='both',
+                                      limit_area='inside')
+    ts_interp = ts_interp.interpolate(method='linear', 
+                                      limit=None,
+                                      limit_direction='both', 
+                                      limit_area='outside')
 
     if window2 < ts_interp.size:
         try:
