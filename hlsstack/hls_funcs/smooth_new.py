@@ -334,16 +334,34 @@ def smooth_xr_parallel(dat, smooth_dict, n_jobs=-1, chunk_size=2000):
     return out.transpose('time', 'y', 'x')
 
 
-# ── 5. Original apply_ufunc approach — kept for reference / Dask cluster use ───
+# ── 5. apply_ufunc approach — distributes across a Dask cluster ───────────────
 
-def smooth_xr_dask(dat_chunked, dims, kwargs={'double': True}):
+def smooth_xr_dask(dat, smooth_dict, dims=['time']):
     """
-    Original approach — useful when you have a distributed Dask cluster
-    (e.g. dask-jobqueue on SLURM/PBS).  Chunk along x and y so Dask
-    schedules one task per spatial tile instead of one task per pixel.
+    Drop-in replacement for smooth_xr_parallel that distributes across a Dask
+    cluster (e.g. dask-jobqueue's SLURMCluster) instead of a single node's local
+    joblib pool. `dat` must still be a lazy, dask-backed DataArray -- don't
+    .compute()/.values it first, or every chunk collapses onto whichever process
+    calls this. Chunk dims[0] (e.g. 'time') is forced to a single chunk (required
+    by double_savgol); every other chunked dim (y, x) becomes one independent
+    task Dask can schedule on any worker/node.
     """
-    # Rechunk: keep full time axis per task, tile spatially
-    #dat_chunked = dat.chunk({'time': -1, 'y': 50, 'x': 50})
+    kwargs = dict(
+        double        = True,
+        window1_max   = smooth_dict['smooth_window1_max'],
+        window2       = smooth_dict['smooth_window2'],
+        limit         = smooth_dict['smooth_limit'],
+    )
+
+    dat_chunked = dat.chunk({dims[0]: -1})
+
+    try:
+        from dask.distributed import get_client
+        get_client()
+    except (ImportError, ValueError):
+        print("WARNING: smooth_xr_dask: no active distributed Client -- this "
+              "will run on Dask's local default scheduler, not a multi-node "
+              "cluster.", flush=True)
 
     xr_smoothed = xr.apply_ufunc(
         double_savgol,
