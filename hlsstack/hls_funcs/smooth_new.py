@@ -30,9 +30,19 @@ def despike_ts_xr(da, dat_thresh, days_thresh, z_thresh=3.5, mask_outliers=False
         ds_cln = ds_cln.where(np.abs(mod_z) <= z_thresh)
 
     # 2. Setup Time Indices for dx calculations
-    # Create a 1D array of indices [0, 1, 2...] and broadcast to 3D
-    t_idx = xr.DataArray(np.arange(len(da.time)), dims='time', coords={'time': da.time})
-    current_idx = t_idx.broadcast_like(ds_cln)
+    # A 1D array of indices [0, 1, 2...]. Deliberately left 1D and NOT
+    # broadcast to (time, y, x): t_idx is numpy-backed while ds_cln is
+    # dask-backed, so broadcast_like() returns a full-cube *numpy* array. It
+    # is a cheap stride-0 view in this process, but the moment it meets a
+    # dask array in an elemwise op (the .where() below), dask wraps it via
+    # from_array(x, chunks=x.shape) -- one single chunk holding the entire
+    # cube, embedded in the graph as ('array-<hash>', 0, 0, 0). That literal
+    # is sized by the whole AOI, not by the caller's spatial chunk size, so
+    # no tiling can bound it: ~35 GB on tbng (487 daily steps x 3200 x 2800
+    # int64), which OOM-kills every worker it is shipped to. Left 1D, xarray
+    # broadcasts it lazily per chunk for free -- same values, same dtypes.
+    current_idx = xr.DataArray(np.arange(len(da.time)), dims='time',
+                               coords={'time': da.time})
 
     # 3. Iterative Despiking (Vectorized)
     for _ in range(iters):
