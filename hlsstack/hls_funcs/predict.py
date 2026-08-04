@@ -50,7 +50,11 @@ def pred_bm(dat, model):
     model_vars = list(model.feature_names_in_)
 
     def pred_func(*args):
-        mat = np.stack(args, axis=-1).astype(np.float32)
+        # args each arrive as (time, y, x). Flatten y/x to a single pixel axis
+        # here, with numpy, rather than upstream with xarray's
+        # .stack(z=('y','x')) -- see pred_func_xr below for why.
+        grid = args[0].shape[1:]
+        mat = np.stack([a.reshape(a.shape[0], -1) for a in args], axis=-1).astype(np.float32)
         time_steps, n_pixels, n_bands = mat.shape
         max_f32 = np.finfo(np.float32).max
 
@@ -59,7 +63,7 @@ def pred_bm(dat, model):
         for t in range(time_steps):
             mat_t = mat[t]
             mat_t = np.where(np.isfinite(mat_t) & (np.abs(mat_t) <= max_f32), mat_t, np.nan)
-            
+
             # Restore DataFrame to satisfy StandardScaler's feature name expectation
             df_t = pd.DataFrame(mat_t, columns=model_vars)
             valid_mask = ~df_t.isna().any(axis=1).values
@@ -72,22 +76,30 @@ def pred_bm(dat, model):
             del mat_t, df_t, valid_mask
 
         del mat
-        return out.astype(np.int16)
+        return out.astype(np.int16).reshape((time_steps,) + grid)
 
     def pred_func_xr(dat_xr, model_vars_xr):
-        dat_xr = dat_xr.stack(z=('y', 'x'))
+        # The index functions run on the native (time, y, x) grid. They used to
+        # run on dat_xr.stack(z=('y','x')), which builds a pandas MultiIndex
+        # with one entry per pixel -- and every elementwise op inside func_dict
+        # then pays index alignment proportional to it. That was 92% of this
+        # function's runtime: measured on one tbng-sized date (3000x2600, 7.8
+        # Mpx), the 14 index functions took 25.3s stacked versus 0.76s
+        # unstacked, against 0.06s for model.predict itself. Dropping the z
+        # index alone (same stacked shape, no MultiIndex) also gives 0.61s, so
+        # it is the index, not the reshape. pred_func flattens y/x with numpy
+        # instead, where it is a view. Results are bit-identical.
         vars_list_xr = [func_dict[v](dat_xr) for v in model_vars_xr]
 
-        bm_xr = xr.apply_ufunc(
+        return xr.apply_ufunc(
             pred_func,
             *vars_list_xr,
             dask='parallelized',
             vectorize=False,
-            input_core_dims=[['time', 'z']] * len(model_vars_xr),
-            output_core_dims=[['time', 'z']],
+            input_core_dims=[['time', 'y', 'x']] * len(model_vars_xr),
+            output_core_dims=[['time', 'y', 'x']],
             output_dtypes=['int16']
         )
-        return bm_xr.unstack('z')
 
     return pred_func_xr(dat, model_vars)
 
@@ -178,13 +190,16 @@ def pred_cov(dat, model):
                  'BAI_126', 'BAI_136', 'BAI_146', 'BAI_236', 'BAI_246', 'BAI_346']
 
     def pred_cov_np(*args):
-        # args are each (time, z) — stack along new last axis to get (time, z, bands)
-        mat = np.stack(args, axis=-1).astype(np.float32)
-        
+        # args are each (time, y, x) — flatten y/x to one pixel axis with numpy
+        # (see pred_cov_xr below for why not xarray's .stack) and stack along a
+        # new last axis to get (time, pixel, bands)
+        grid = args[0].shape[1:]
+        mat = np.stack([a.reshape(a.shape[0], -1) for a in args], axis=-1).astype(np.float32)
+
         time_steps, n_pixels, n_bands = mat.shape
         max_f32 = np.finfo(np.float32).max
-        
-        # Output: (4, time, z)
+
+        # Output: (4, time, pixel)
         unmixed = np.full((4, time_steps, n_pixels), np.nan, dtype=np.float32)
         
         for t in range(time_steps):
@@ -206,10 +221,17 @@ def pred_cov(dat, model):
             del mat_t, valid_mask
         
         del mat
-        return unmixed[0], unmixed[1], unmixed[2], unmixed[3]  # each (time, z)
+        unmixed = unmixed.reshape((4, time_steps) + grid)
+        return unmixed[0], unmixed[1], unmixed[2], unmixed[3]  # each (time, y, x)
 
     def pred_cov_xr(dat_xr, name):
-        dat_xr = dat_xr.stack(z=('y', 'x'))
+        # No dat_xr.stack(z=('y','x')) here -- the index functions run on the
+        # native (time, y, x) grid, and pred_cov_np flattens y/x with numpy
+        # instead. Stacking builds a pandas MultiIndex with one entry per pixel,
+        # and every elementwise op in the 17 func_dict calls below then pays
+        # index alignment against it: 46.7s versus 4.9s per tbng-sized date
+        # (3000x2600). Bit-identical either way. Same fix as pred_bm -- see its
+        # pred_func_xr for the full measurement.
         vars_list_xr = [func_dict[v](dat_xr) for v in band_list]
 
         # Use separate unique dimension names for each output
@@ -218,12 +240,12 @@ def pred_cov(dat, model):
             *vars_list_xr,
             dask='parallelized',
             vectorize=False,
-            input_core_dims=[['time', 'z']] * len(band_list),
-            output_core_dims=[['time', 'z']] * 4,
+            input_core_dims=[['time', 'y', 'x']] * len(band_list),
+            output_core_dims=[['time', 'y', 'x']] * 4,
             output_dtypes=['float32'] * 4
         )
 
-        cov_xr = xr.concat(unmixed_xr, dim='type').unstack('z')
+        cov_xr = xr.concat(unmixed_xr, dim='type')
         cov_xr = cov_xr.assign_coords(type=name)
         return cov_xr.to_dataset(dim='type')
 
