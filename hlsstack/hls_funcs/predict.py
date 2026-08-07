@@ -1,6 +1,7 @@
 import pickle
 import os
 import glob
+import functools
 import pandas as pd
 import xarray as xr
 import numpy as np
@@ -104,52 +105,243 @@ def pred_bm(dat, model):
     return pred_func_xr(dat, model_vars)
 
 
-def pred_bm_se(dat, model, mod_boot_dir, nboot=100, avg_std=144.61):
-    # see https://doi.org/10.1016/j.jbusres.2016.03.049
-    mod_list = glob.glob(os.path.join(mod_boot_dir,'*.pk'))
-    model_vars = model.feature_names_in_
-    dat_masked = dat.where(dat.notnull)
-    
-    def pred_func(*args, mod_vars_np):
-        #warnings.filterwarnings('ignore', category=InconsistentVersionWarning)
-        vars_dict_np = {}
-        for idx, v in enumerate(mod_vars_np):
-            vars_dict_np[v] = args[idx]
-        df_vars = pd.DataFrame(vars_dict_np, columns=mod_vars_np)
-        df_vars.replace([np.inf, -np.inf], np.nan, inplace=True)
-        se_np = np.ones_like(args[0]) * np.nan
-        mask = np.any(~np.isfinite(args), axis=0)
-        if len(df_vars[model.feature_names_in_].dropna(how='any')) > 0:
-            rand_mod_idx = random.sample(range(len(mod_list)), nboot)
-            preds = []
-            for b in rand_mod_idx:
-                with open(mod_list[b], 'rb') as f:
-                    mod_tmp = pd.compat.pickle_compat.load(f)
-                preds_tmp = mod_tmp.predict(df_vars[mod_tmp.feature_names_in_].dropna(how='any'))
-                preds.append(pd.Series(preds_tmp, name='predy_' + str(b)))
-            df_preds = pd.concat(preds, axis=1)
-            se_np[~mask] = df_preds.std(axis=1).values + avg_std
-        return se_np.astype('float32')
+_ABSENT = object()
+
+# Rows used to check that the recovered affine map really reproduces .predict().
+_BOOT_PROBE_ROWS = 512
+
+# Pixels per matmul batch. Bounds the (batch, nboot) prediction matrix -- the
+# old pd.concat of nboot float64 Series was sized by the whole date instead
+# (~3.1 GB for one tbng date, ~5.4 GB for a full HLS tile), which no choice of
+# -c/spatial_chunk_size could bound because it is sized before tiling applies.
+_BOOT_BATCH = 250_000
+
+
+def _load_boot_models(mod_boot_dir, nboot):
+    """Unpickle a deterministic nboot-member subset of a bootstrap ensemble."""
+    paths = sorted(glob.glob(os.path.join(mod_boot_dir, '*.pk')))
+    if not paths:
+        raise ValueError('no bootstrap models (*.pk) found in ' + str(mod_boot_dir))
+    if nboot is not None and nboot < len(paths):
+        # A fixed seed, rather than random.sample()'s fresh per-call draw. The
+        # old behaviour re-drew a different subset for every block, which made
+        # Biomass_SE nondeterministic run-to-run *and* inconsistent between
+        # adjacent dates -- the reason create_bm_se cannot trust its own output
+        # for change detection and has to borrow Biomass's. Seeding keeps the
+        # subset uniformly drawn (the members are exchangeable bootstrap
+        # replicates, so any fixed subset is as good as a fresh one) while
+        # making it reproducible.
+        paths = sorted(random.Random(0).sample(paths, nboot))
+    elif nboot is not None and nboot > len(paths):
+        print('      pred_bm_se: only %d bootstrap model(s) in %s; using all of '
+              'them (nboot=%d requested)' % (len(paths), mod_boot_dir, nboot),
+              flush=True)
+    models = []
+    for p in paths:
+        with open(p, 'rb') as f:
+            models.append(pd.compat.pickle_compat.load(f))
+    return models
+
+
+def _affine_ensemble(models, feats):
+    """
+    Collapse a bootstrap ensemble to one (n_features, n_members) matrix.
+
+    Each member is a TransformedTargetRegressor wrapping
+    Pipeline([StandardScaler, PLSRegression(scale=False)]) -- scaling and PLS
+    are both linear, so the regressor is an exact affine map and all members
+    together are a single matmul. Only the target transform (identity on some
+    vintages, xfrm_y/bxfrm_y i.e. sqrt/square on others) is nonlinear, and it
+    is elementwise, so it applies to the whole (n_pixels, n_members) result
+    at once.
+
+    The coefficients are recovered by *probing* -- evaluating the regressor on
+    a zero row and the identity basis -- rather than by reading coef_/_x_mean/
+    _x_std. These pickles were written by a different sklearn version (they
+    raise InconsistentVersionWarning, and their Pipeline repr is already
+    broken by an attribute that no longer exists), so their attribute layout
+    is not trustworthy; probing reproduces whatever the *installed* sklearn's
+    .predict() actually computes, which is the behaviour we must preserve.
+
+    Returns (W, B, inv) or (None, None, None) if the ensemble does not have
+    this shape, in which case the caller falls back to per-member .predict().
+    """
+    n = len(feats)
+    invs = set()
+    for m in models:
+        if list(getattr(m, 'feature_names_in_', [])) != feats:
+            return None, None, None
+        if not hasattr(m, 'regressor_') or not hasattr(m, 'transformer_'):
+            return None, None, None
+        invs.add(getattr(m.transformer_, 'inverse_func', _ABSENT))
+    if len(invs) != 1:
+        return None, None, None
+    inv = invs.pop()
+    if inv is _ABSENT:
+        return None, None, None
+
+    probe = np.zeros((n + 1, n), dtype=np.float64)
+    probe[1:] = np.eye(n)
+    probe_df = pd.DataFrame(probe, columns=feats)
+
+    W = np.empty((n, len(models)), dtype=np.float64)
+    B = np.empty(len(models), dtype=np.float64)
+    for k, m in enumerate(models):
+        out = np.asarray(m.regressor_.predict(probe_df), dtype=np.float64).ravel()
+        if out.size != n + 1:
+            return None, None, None
+        B[k] = out[0]
+        W[:, k] = out[1:] - out[0]
+
+    # Verify the recovered map against the real .predict(), on rows spanning
+    # the magnitudes the features actually take. An exactly affine model
+    # matches to round-off; anything else fails here and takes the fallback.
+    rng = np.random.default_rng(0)
+    sample = rng.normal(size=(_BOOT_PROBE_ROWS, n)) * 1000.0
+    sample_df = pd.DataFrame(sample, columns=feats)
+    recon = sample @ W + B
+    if inv is not None:
+        recon = inv(recon)
+    for k, m in enumerate(models):
+        ref = np.asarray(m.predict(sample_df), dtype=np.float64).ravel()
+        if not np.allclose(ref, recon[:, k], rtol=1e-6, atol=1e-6):
+            return None, None, None
+    return W, B, inv
+
+
+@functools.lru_cache(maxsize=4)
+def _boot_ensemble(mod_boot_dir, nboot):
+    """
+    Load and prepare a bootstrap ensemble once per worker process.
+
+    pred_bm_se used to open and unpickle every member *inside* its kernel --
+    once per date, per block, per worker. The CPER ensemble is 100 members of
+    2.79 MB, so drawing 50 of them re-read ~140 MB from /project for every
+    single date. Almost all of that is x_scores_/y_scores_ (the 8682 training
+    rows' latent scores), which inference never touches; the predictive
+    content is ~1.2 kB per member.
+
+    Cached per (directory, nboot). On the affine path the member objects are
+    dropped once their coefficients are extracted, so what stays resident is
+    the ~11 kB (W, B) rather than the ~140 MB of unpickled estimators.
+    """
+    models = _load_boot_models(mod_boot_dir, nboot)
+    feats = list(models[0].feature_names_in_)
+    W, B, inv = _affine_ensemble(models, feats)
+    if W is None:
+        print('      pred_bm_se: bootstrap ensemble in %s is not an affine PLS '
+              'ensemble -- falling back to per-member predict()'
+              % mod_boot_dir, flush=True)
+        return {'feats': feats, 'W': None, 'B': None, 'inv': None,
+                'models': models, 'n': len(models)}
+    return {'feats': feats, 'W': W, 'B': B, 'inv': inv,
+            'models': None, 'n': len(models)}
+
+
+def pred_bm_se(dat, model, mod_boot_dir, nboot=100, avg_std=144.61,
+               boot_batch=_BOOT_BATCH):
+    """
+    Per-pixel standard error of the biomass prediction, from a bootstrapped
+    PLS ensemble. See https://doi.org/10.1016/j.jbusres.2016.03.049
+
+    Measured 27-30x faster than the pre-2026-08 implementation (27.4s -> 1.0s
+    for one 1 Mpx date; 112.0s -> 3.7s at 4 Mpx), which stacked y/x into a
+    pandas MultiIndex before computing the 28 index features, re-unpickled 50
+    ensemble members from disk inside the kernel on every call, repeated a
+    loop-invariant dropna once per member, and accumulated the result in an
+    n_pixels x nboot float64 pd.concat. Full write-up, including the
+    equivalence testing, in the py_hls_nrt repo:
+    docs/bug_fixes/predict_stack_multiindex.md, "Follow-up: pred_bm_se".
+
+    The ensemble subset is seeded, so repeated runs on identical input agree;
+    it used to be redrawn at random per block. See _load_boot_models.
+    """
+    ens = _boot_ensemble(mod_boot_dir, nboot)
+    model_vars = list(model.feature_names_in_)
+
+    # The member features have to come from the arrays we compute for the
+    # point model. The old implementation required the same thing implicitly:
+    # it assigned the member-level dropna result into the point model's
+    # all-finite mask, which only lines up when the two feature sets agree.
+    missing = [v for v in ens['feats'] if v not in model_vars]
+    if missing:
+        raise ValueError(
+            'bootstrap ensemble in {} needs feature(s) {} that the point model '
+            'does not provide'.format(mod_boot_dir, missing))
+    col_idx = [model_vars.index(v) for v in ens['feats']]
+    W, B, inv = ens['W'], ens['B'], ens['inv']
+    boot_models = ens['models']
+
+    def _se_batch(X):
+        """Per-pixel SE across the ensemble for one (n_pixels, n_feat) batch."""
+        if W is not None:
+            preds = X @ W + B
+            if inv is not None:
+                preds = inv(preds)
+        else:
+            X_df = pd.DataFrame(X, columns=ens['feats'])
+            preds = np.empty((X.shape[0], len(boot_models)), dtype=np.float64)
+            for k, mod_tmp in enumerate(boot_models):
+                preds[:, k] = np.asarray(mod_tmp.predict(X_df)).ravel()
+        # ddof=1 to match the pandas DataFrame.std() this replaces; numpy
+        # defaults to ddof=0 and would quietly shrink every SE.
+        return preds.std(axis=1, ddof=1) + avg_std
+
+    def pred_func(*args):
+        # args each arrive as (time, y, x). Flatten y/x with numpy, one date at
+        # a time, rather than upstream with xarray's .stack(z=('y','x')) -- see
+        # pred_func_xr below for why.
+        grid = args[0].shape[1:]
+        time_steps = args[0].shape[0]
+        n_pixels = int(np.prod(grid))
+        out = np.full((time_steps, n_pixels), np.nan, dtype=np.float32)
+
+        for t in range(time_steps):
+            flat = [np.asarray(a[t]).reshape(-1) for a in args]
+            # A pixel is usable where every feature is finite. Accumulated one
+            # feature at a time so nothing of (n_features, n_pixels) size is
+            # ever materialized at once.
+            valid = np.ones(n_pixels, dtype=bool)
+            for f in flat:
+                valid &= np.isfinite(f)
+            idx = np.flatnonzero(valid)
+            if idx.size == 0:
+                continue
+
+            for start in range(0, idx.size, boot_batch):
+                sl = idx[start:start + boot_batch]
+                X = np.empty((sl.size, len(col_idx)), dtype=np.float64)
+                for c, j in enumerate(col_idx):
+                    X[:, c] = flat[j][sl]
+                out[t, sl] = _se_batch(X).astype(np.float32)
+                del X
+
+            del flat, valid, idx
+
+        return out.reshape((time_steps,) + grid)
 
     def pred_func_xr(dat_xr, model_vars_xr):
-        dat_xr = dat_xr.stack(z=('y', 'x'))
-        dims_list = [['z'] for v in model_vars_xr]
-        vars_list_xr = []
-        for v in model_vars_xr:
-            vars_list_xr.append(func_dict[v](dat_xr))
-        se_xr = xr.apply_ufunc(pred_func,
-                               *vars_list_xr,
-                               kwargs=dict(mod_vars_np=np.array(model_vars_xr)),
-                               dask='parallelized',
-                               vectorize=True,
-                               input_core_dims=dims_list,
-                               output_core_dims=[dims_list[0]],
-                               output_dtypes=['float32'])
-        return se_xr.unstack('z')
+        # The index functions run on the native (time, y, x) grid. They used to
+        # run on dat_xr.stack(z=('y','x')), which builds a pandas MultiIndex
+        # with one entry per pixel -- and every elementwise op inside func_dict
+        # then pays index alignment proportional to it. Same fix, and the same
+        # measurement, as pred_bm and pred_cov: on one tbng-sized date
+        # (3000x2600, 7.8 Mpx) 14 index functions took 25.3s stacked versus
+        # 0.76s unstacked. This model uses 28 of them, so it was paying roughly
+        # double. pred_func flattens y/x with numpy instead, where it is a view.
+        vars_list_xr = [func_dict[v](dat_xr) for v in model_vars_xr]
 
-    se_out = pred_func_xr(dat_masked, model_vars)
+        return xr.apply_ufunc(
+            pred_func,
+            *vars_list_xr,
+            dask='parallelized',
+            vectorize=False,
+            input_core_dims=[['time', 'y', 'x']] * len(model_vars_xr),
+            output_core_dims=[['time', 'y', 'x']],
+            output_dtypes=['float32']
+        )
 
-    return se_out
+    return pred_func_xr(dat, model_vars)
 
 
 def xr_cdf(dat):
