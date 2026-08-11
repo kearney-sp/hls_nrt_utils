@@ -77,7 +77,7 @@ def pred_bm(dat, model):
             del mat_t, df_t, valid_mask
 
         del mat
-        return out.astype(np.int16).reshape((time_steps,) + grid)
+        return out.reshape((time_steps,) + grid)
 
     def pred_func_xr(dat_xr, model_vars_xr):
         # The index functions run on the native (time, y, x) grid. They used to
