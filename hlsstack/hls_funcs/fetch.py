@@ -78,6 +78,51 @@ needed_bands = ['BLUE',
                 'VAA']
 
 
+def _has_band_assets(item, coll_key):
+    """True if the STAC item carries any of the band assets build_xr asks
+    stackstac for. A `metadata`-only item is useless to the stack."""
+    table = lut.get(coll_key, {})
+    want = [a for a in table if table[a] in needed_bands]
+    return any(a in item.get('assets', {}) for a in want)
+
+
+def _repair_bandless(items, base_query, coll_key, debug=False):
+    """Re-fetch any item whose band assets are missing, one day at a time.
+
+    See the call site for why a broad CMR query can return a granule stripped
+    down to its `metadata` asset. The single-day re-query returns the complete
+    record for the same id; if it does not, the original is kept and the item
+    is left to be dropped downstream as before, so this can only add assets,
+    never remove them.
+    """
+    bad = [i for i, it in enumerate(items) if not _has_band_assets(it, coll_key)]
+    if not bad:
+        return items
+    if debug:
+        print('Re-querying {} {} granule(s) returned without band assets.'.format(
+            len(bad), coll_key))
+    for i in bad:
+        gid = items[i].get('id', '')
+        day = items[i].get('properties', {}).get('datetime', '')[:10]
+        if not day:
+            continue
+        lo = str(datetime.strptime(day, '%Y-%m-%d').date() - timedelta(days=1))
+        hi = str(datetime.strptime(day, '%Y-%m-%d').date() + timedelta(days=1))
+        q = '{}&datetime={}T00:00:00Z/{}T00:00:00Z'.format(base_query, lo, hi)
+        try:
+            feats = r.get(q).json()['features']
+        except Exception as exc:
+            print('Warning: re-query failed for {}: {!r}'.format(gid, exc))
+            continue
+        for f in feats:
+            if f.get('id') == gid and _has_band_assets(f, coll_key):
+                items[i] = f
+                if debug:
+                    print('   repaired {}'.format(gid))
+                break
+    return items
+
+
 def HLS_CMR_STAC(hls_data, bbox_latlon, lim=100, aws=False, debug=False):
     """
     Define and execute a url-query of LPCLOUD DAAC for the HLSS30 and HLSL30 products.
@@ -224,6 +269,28 @@ def HLS_CMR_STAC(hls_data, bbox_latlon, lim=100, aws=False, debug=False):
         s30_items = s30_items + [h for h in features_s30]  
         l30_items = l30_items + [h for h in features_l30]
     
+    # Repair granules CMR returned without their band assets. A broad search
+    # can come back with `assets: {'metadata': ...}` only -- no B02/B03/.../
+    # Fmask -- for a granule that a narrower search returns complete. It is
+    # reproducible and depends on how much the query matched, not on paging or
+    # `limit`: measured on one T13TDF granule, the same id is metadata-only at
+    # matched=65 and matched=17, and full at matched=3 and matched=1.
+    #
+    # Nothing downstream notices. stackstac.stack() silently drops an item with
+    # none of the requested assets, so build_xr's stack is simply short and the
+    # date disappears from the pipeline's view -- measured as 134 items in and
+    # 131 out for soap 2026, losing 2026-07-29, 08-03 and 08-08. The store had
+    # already downloaded those dates when the records were intact, so the next
+    # run saw the store holding dates the metadata "no longer" had, which is
+    # the orphaned-date abort in hls_yr_download_zarr.
+    #
+    # Re-query each bandless granule over its own day and keep the better
+    # record. Costs one small request per affected granule, which is normally
+    # zero; a granule that is genuinely assetless (still being ingested) stays
+    # bandless and is dropped as before.
+    s30_items = _repair_bandless(s30_items, search_query2_s30, 'HLSS30', debug)
+    l30_items = _repair_bandless(l30_items, search_query2_l30, 'HLSL30', debug)
+
     if aws:
         # change the query url to point to the AWS S3 bucket
         for stac in s30_items:
