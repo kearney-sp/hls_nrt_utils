@@ -86,40 +86,96 @@ def _has_band_assets(item, coll_key):
     return any(a in item.get('assets', {}) for a in want)
 
 
-def _repair_bandless(items, base_query, coll_key, debug=False):
-    """Re-fetch any item whose band assets are missing, one day at a time.
+COG_TYPE = 'image/tiff; application=geotiff; profile=cloud-optimized'
 
-    See the call site for why a broad CMR query can return a granule stripped
-    down to its `metadata` asset. The single-day re-query returns the complete
-    record for the same id; if it does not, the original is kept and the item
-    is left to be dropped downstream as before, so this can only add assets,
-    never remove them.
+
+def _assets_from_cmr_metadata(item, debug=False):
+    """Rebuild a granule's band assets from its own CMR UMM record.
+
+    The `metadata` asset CMR-STAC always emits points at
+    /search/concepts/<concept-id>.xml; the same concept served as .umm_json
+    carries RelatedUrls, and every `GET DATA` .tif URL there is a band. The UMM
+    record is the authoritative granule metadata -- verified identical between a
+    granule CMR-STAC expands and one it does not (same keys, same 41
+    AdditionalAttributes, same 18 GET DATA urls) -- so this reconstructs exactly
+    what the STAC response should have contained. It also recovers the four
+    angle bands (SZA/SAA/VZA/VAA) that LPDAAC's own per-granule _stac.json
+    omits but `needed_bands` requires.
+
+    Returns {} if anything is missing, so the caller can leave the item alone.
+    """
+    href = item.get('assets', {}).get('metadata', {}).get('href', '')
+    if '/concepts/' not in href:
+        return {}
+    try:
+        umm = r.get(href.rsplit('.', 1)[0] + '.umm_json').json()
+    except Exception as exc:
+        print('Warning: UMM fetch failed for {}: {!r}'.format(item.get('id'), exc))
+        return {}
+    assets = {}
+    for ru in umm.get('RelatedUrls', []):
+        url = ru.get('URL', '')
+        if ru.get('Type') == 'GET DATA' and url.endswith('.tif'):
+            # ...<granule-id>.<BAND>.tif -- the band key matches `lut`'s
+            assets[url.rsplit('.', 2)[-2]] = {
+                'href': url, 'type': COG_TYPE, 'roles': ['data']}
+    return assets
+
+
+def _repair_bandless(items, base_query, coll_key, debug=False):
+    """Restore band assets to any item CMR returned without them.
+
+    See the call site for why a CMR query can return a granule stripped down to
+    its `metadata` asset. Two repairs, cheapest first:
+
+    1. Re-query the granule's own day. This fixes the case where the omission
+       tracks how much the query matched -- the same id comes back complete
+       from a narrower search.
+    2. Rebuild the assets from the granule's CMR UMM record. Needed because the
+       omission is not always query-dependent: on 2026-07-29 every S30 granule
+       in the region was metadata-only under a day search, a single-item GET,
+       and the full-range search alike, while the UMM record listed all 18
+       band urls. That is CMR-STAC's asset expansion failing, not missing data.
+
+    Only ever adds assets. A granule that neither repair can complete is left
+    exactly as it was, and dropped downstream as before.
     """
     bad = [i for i, it in enumerate(items) if not _has_band_assets(it, coll_key)]
     if not bad:
         return items
     if debug:
-        print('Re-querying {} {} granule(s) returned without band assets.'.format(
+        print('Repairing {} {} granule(s) returned without band assets.'.format(
             len(bad), coll_key))
     for i in bad:
-        gid = items[i].get('id', '')
-        day = items[i].get('properties', {}).get('datetime', '')[:10]
-        if not day:
+        it = items[i]
+        gid = it.get('id', '')
+        day = it.get('properties', {}).get('datetime', '')[:10]
+        if day:
+            lo = str(datetime.strptime(day, '%Y-%m-%d').date() - timedelta(days=1))
+            hi = str(datetime.strptime(day, '%Y-%m-%d').date() + timedelta(days=1))
+            q = '{}&datetime={}T00:00:00Z/{}T00:00:00Z'.format(base_query, lo, hi)
+            try:
+                feats = r.get(q).json()['features']
+            except Exception as exc:
+                print('Warning: re-query failed for {}: {!r}'.format(gid, exc))
+                feats = []
+            for f in feats:
+                if f.get('id') == gid and _has_band_assets(f, coll_key):
+                    items[i] = f
+                    if debug:
+                        print('   re-query repaired {}'.format(gid))
+                    break
+        if _has_band_assets(items[i], coll_key):
             continue
-        lo = str(datetime.strptime(day, '%Y-%m-%d').date() - timedelta(days=1))
-        hi = str(datetime.strptime(day, '%Y-%m-%d').date() + timedelta(days=1))
-        q = '{}&datetime={}T00:00:00Z/{}T00:00:00Z'.format(base_query, lo, hi)
-        try:
-            feats = r.get(q).json()['features']
-        except Exception as exc:
-            print('Warning: re-query failed for {}: {!r}'.format(gid, exc))
-            continue
-        for f in feats:
-            if f.get('id') == gid and _has_band_assets(f, coll_key):
-                items[i] = f
+        rebuilt = _assets_from_cmr_metadata(it, debug)
+        if rebuilt:
+            it = dict(it)
+            it['assets'] = dict(it.get('assets', {}), **rebuilt)
+            if _has_band_assets(it, coll_key):
+                items[i] = it
                 if debug:
-                    print('   repaired {}'.format(gid))
-                break
+                    print('   UMM metadata repaired {} ({} assets)'.format(
+                        gid, len(rebuilt)))
     return items
 
 
