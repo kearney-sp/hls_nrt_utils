@@ -1,3 +1,4 @@
 recursive-include data_files *
 include README.md
 include hlsstack/models/*.pk
+include hlsstack/models/*.tif

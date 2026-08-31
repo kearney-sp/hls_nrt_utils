@@ -45,6 +45,8 @@ Four top-level packages under `hlsstack/`: `hls_funcs/`, `models/`, `utils/`, `o
 ```
 hls_funcs/bands.py    (leaf: numpy/xarray only)
 hls_funcs/indices.py  (leaf: numpy only)
+hls_funcs/mmodel.py   (leaf: numpy + joblib only; vendored mmodel_sel weight kernel,
+                       bundle loader, embedding->cosine helper for pred_bm_mmodel)
 hls_funcs/fetch.py    (leaf: STAC query + lazy stackstac build; no internal deps)
 hls_funcs/smooth.py, smooth_new.py   (leaf: temporal smoothing; no internal deps)
 models/load.py        (leaf: model_dict registry + load_model())
@@ -52,6 +54,8 @@ utils/convert.py      (leaf: KMZ/shapefile conversion)
 objects/charts.py     (leaf: static ECharts dicts; fully decoupled, no imports of/from anything else)
 
 hls_funcs/predict.py  --> hls_funcs.bands, hls_funcs.indices   (top-level `import *`, for func_dict)
+                      --> hls_funcs.mmodel                      (top-level, for pred_bm_mmodel)
+                      --> rioxarray                             (top-level, .rio accessor for pred_bm_mmodel)
                       --> models.load.load_model                (deferred import, pred_cp_old only)
 
 hls_funcs/masks.py    --> hls_funcs.bands            (deferred import, in bolton_mask_xr)
@@ -74,6 +78,7 @@ Practical rule when adding code: `bands.py`/`indices.py` must stay leaves (no im
 - `predict.pred_cp` requires `time` as a single chunk (`dat.chunk({'time': -1})`); it raises `ValueError` otherwise. Every other prediction path (`pred_bm`, `pred_cov`, `pred_bm_se`) tolerates `time: 1`.
 - Model-loading convention: current code (`pred_bm`, `pred_cov`, `pred_cp`) takes an already-loaded `model` object as a parameter and closure-captures it into `apply_ufunc`/`map_blocks`. Only the legacy `pred_cp_old` reloads the model per-call via a deferred `models.load.load_model` import (worked around historical cross-process deserialization errors) — don't copy that pattern into new code; load once and pass the model in.
 - Model registry: add new `.pk`/`.pkl` models to `models/load.py::model_dict` only — never hardcode a model path elsewhere in the codebase.
+- `pred_bm_mmodel` is the odd one out: its `'mmodel_biomass'` registry entry is a plain dict of numpy arrays (no sklearn estimator, no `feature_names_in_`), and it also ships a package-data raster `models/mmodel_similarity_conus_2km.tif`. Both are regenerated from the `mmodel_sel` project — the bundle by its `scripts/i_export_mmodel_bundle.py`, the raster by its `scripts/b_embeddings.py --steps export --stack`. Don't point other prediction paths at `'mmodel_biomass'`.
 
 ## State management & logging
 - No `logging` module anywhere in the library except one branch in `hpc_setup.py` (debug mode); all status/progress is `print()`. Match this — don't introduce a logging framework into `hlsstack`.

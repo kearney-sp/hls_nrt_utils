@@ -6,8 +6,11 @@ import pandas as pd
 import xarray as xr
 import numpy as np
 import random
+import rioxarray  # noqa: F401 -- registers the .rio accessor used by pred_bm_mmodel
+from pkg_resources import resource_filename
 from hlsstack.hls_funcs.bands import *
 from hlsstack.hls_funcs.indices import *
+from hlsstack.hls_funcs import mmodel as _mm
 from pysptools.abundance_maps import amaps
 import scipy.stats as st
 from sklearn.cross_decomposition import PLSRegression
@@ -103,6 +106,215 @@ def pred_bm(dat, model):
         )
 
     return pred_func_xr(dat, model_vars)
+
+
+# ------------------------------------------------------------------------------
+# pred_bm_mmodel -- the mmodel_sel embedding-p=2 five-model biomass blend
+# ------------------------------------------------------------------------------
+
+#: default bundled similarity raster (6 bands: 5 model cosines + domain), written
+#: by mmodel_sel `scripts/b_embeddings.py --steps export --stack` and shipped as
+#: package data. int16, cosine * 1e4, nodata -32768, EPSG:5070.
+_MMODEL_SIMILARITY_COG = 'models/mmodel_similarity_conus_2km.tif'
+_MMODEL_SIM_SCALE = 1e4
+_MMODEL_SIM_NODATA = -32768
+
+#: reprojected similarity is cached per (bundle, output grid) so a `map_blocks`
+#: run does not reproject the CONUS raster once per timestep.
+_mmodel_sim_cache = {}
+
+
+def _infer_crs(dat):
+    try:
+        if dat.rio.crs is not None:
+            return dat.rio.crs
+    except Exception:
+        pass
+    for key in ('crs', 'proj:epsg', 'epsg'):
+        if key in dat.attrs:
+            return dat.attrs[key]
+    if 'epsg' in dat.coords:
+        return 'EPSG:' + str(int(dat['epsg'].values))
+    raise ValueError(
+        'could not infer a CRS from `dat`; pass `similarity=` as a DataArray '
+        'already on `dat`\'s grid, or write a CRS onto `dat` first'
+    )
+
+
+def _grid_key(ref):
+    y, x = ref['y'].values, ref['x'].values
+    return (str(ref.rio.crs), float(y[0]), float(y[-1]), y.size,
+            float(x[0]), float(x[-1]), x.size)
+
+
+def _prepare_similarity(dat, bundle, similarity, embedding):
+    """Return a ``(model, y, x)`` DataArray of cosine bands + a `domain` band,
+    aligned to ``dat``'s grid. ``model`` coord is ``bundle['model_keys'] + ['domain']``."""
+    keys = list(bundle['model_keys'])
+    band_names = keys + ['domain']
+
+    ref = dat['NIR1'].isel(time=0) if 'time' in dat['NIR1'].dims else dat['NIR1']
+    ref = ref.rio.write_crs(_infer_crs(dat))
+
+    # already-aligned DataArray: trust it, just select this block's window
+    if isinstance(similarity, xr.DataArray) and 'model' in similarity.dims:
+        return similarity.sel(y=dat['y'], x=dat['x'], method='nearest')
+
+    cache_key = (id(bundle), _grid_key(ref),
+                 None if embedding is not None else str(similarity))
+    if embedding is None and cache_key in _mmodel_sim_cache:
+        return _mmodel_sim_cache[cache_key]
+
+    if embedding is not None:
+        emb = embedding
+        if not isinstance(emb, xr.DataArray):
+            emb = rioxarray.open_rasterio(emb)
+        emb = emb.rio.write_crs(emb.rio.crs or _infer_crs(dat))
+        emb = emb.rio.reproject_match(ref)
+        arr = _mm.cosine_from_embedding(emb.values, bundle)
+        sim = xr.DataArray(
+            arr, dims=('model', 'y', 'x'),
+            coords={'model': band_names, 'y': ref['y'], 'x': ref['x']},
+        )
+    else:
+        path = similarity
+        if path is None:
+            path = resource_filename('hlsstack', _MMODEL_SIMILARITY_COG)
+            if not os.path.exists(path):
+                raise FileNotFoundError(
+                    'no bundled similarity raster at %s. Generate one with '
+                    'mmodel_sel `scripts/b_embeddings.py --steps export --stack`, '
+                    'or pass `similarity=<path>` / `embedding=<64-band raster>`.'
+                    % path
+                )
+        raw = rioxarray.open_rasterio(path)
+        if raw.rio.crs is None:
+            raise ValueError('similarity raster %r has no CRS' % path)
+        raw = raw.where(raw != _MMODEL_SIM_NODATA)
+        if np.nanmax(np.abs(raw.values)) > 1.5:      # int16-scaled cosines
+            raw = raw / _MMODEL_SIM_SCALE
+        raw = raw.rio.reproject_match(ref)
+        if raw.sizes['band'] == len(keys):           # no domain band -> synthesize
+            dom = xr.full_like(raw.isel(band=0), np.nan)
+            raw = xr.concat([raw, dom.expand_dims(band=[len(keys) + 1])], dim='band')
+        sim = raw.rename({'band': 'model'})
+        sim = sim.assign_coords(model=band_names)
+
+    finite = float(np.isfinite(sim.values).mean())
+    if finite < 0.5:
+        raise ValueError(
+            'the similarity raster covers < 50%% of `dat` after reprojection '
+            '(%.0f%% finite) -- check its CRS / extent' % (100 * finite)
+        )
+
+    if embedding is None:
+        _mmodel_sim_cache[cache_key] = sim
+    return sim
+
+
+def pred_bm_mmodel(dat, model, similarity=None, embedding=None, p=None,
+                   domain_mask=True, domain_threshold=None):
+    """Drop-in for :func:`pred_bm`: the mmodel_sel embedding-p=2 biomass blend.
+
+    Predicts biomass (kg/ha) with each of the five site-calibrated local PLS
+    models distilled into ``model`` and averages the five per pixel with
+    ``weights.power_weights(sim_cos, p)`` -- weight ``(cos_i - row-min cos)^p``,
+    so the least-similar model contributes nothing. Predictions are conditional
+    medians (naive square back-transform), biased low, exactly as ``pred_bm``.
+
+    Parameters
+    ----------
+    dat : xr.Dataset
+        HLS reflectance, band-name variables, dims ``(time, y, x)`` -- the same
+        object ``pred_bm`` takes. Intended for
+        ``ds.map_blocks(pred_bm_mmodel, template=ds['NIR1'].astype('float32'),
+        kwargs=dict(model=bundle))``.
+    model : dict
+        A loaded bundle, ``models.load.load_model('mmodel_biomass')``.
+    similarity : None | str | xr.DataArray
+        ``None`` -> the bundled coarse CONUS 6-band cosine raster (package data),
+        reprojected to ``dat``'s grid. A path -> a 5- or 6-band cosine raster
+        (bands in ``model['model_keys']`` order, optional trailing ``domain``).
+        A DataArray with a ``model`` dim -> used as-is (windowed to ``dat``).
+    embedding : None | str | xr.DataArray
+        A 64-band annual embedding raster; cosines and the domain band are
+        computed on the fly from ``model``. Overrides ``similarity``.
+    p : float, optional
+        Weight exponent; defaults to ``model['weight_p']`` (2.0).
+    domain_mask : bool | float
+        If truthy, NaN the blend where the domain similarity is below the
+        threshold (default ``True``). A float is taken as the threshold
+        (implies ``True``). ``False`` disables.
+    domain_threshold : float, optional
+        Cutoff override; defaults to ``model['domain_similarity_threshold']``
+        (0.65).
+
+    Returns
+    -------
+    xr.DataArray
+        ``(time, y, x)`` float32, kg/ha, NaN where unpredictable or out of domain.
+    """
+    bundle = _mm.load_mmodel_bundle(model)
+    keys = list(bundle['model_keys'])
+    K = len(keys)
+    model_vars = list(bundle['feature_names'])
+    missing = set(model_vars) - set(func_dict)
+    if missing:
+        raise KeyError('pred_bm_mmodel: no index function for %s' % sorted(missing))
+
+    if not isinstance(domain_mask, bool) and isinstance(domain_mask, (int, float)):
+        domain_threshold = float(domain_mask)
+        domain_mask = True
+    dthr = float(bundle['domain_similarity_threshold']
+                 if domain_threshold is None else domain_threshold)
+    pp = float(bundle['weight_p'] if p is None else p)
+    coef = bundle['coef']                       # (K, 28)
+    bias = bundle['intercept']                  # (K,)
+    inv_lam = 1.0 / float(bundle['lambda_boxcox'])
+
+    sim = _prepare_similarity(dat, bundle, similarity, embedding)
+
+    def pred_func(*args):
+        feats, sims = args[:28], args[28:]      # sims: K cosine bands + domain
+        grid = feats[0].shape[1:]
+        T = feats[0].shape[0]
+        npix = int(np.prod(grid))
+        max_f32 = np.finfo(np.float32).max
+
+        X_all = np.stack([a.reshape(a.shape[0], -1) for a in feats], axis=-1).astype(np.float32)
+        S = np.stack([np.asarray(s).reshape(-1) for s in sims[:K]], axis=-1).astype(np.float64)
+        dom = np.asarray(sims[K]).reshape(-1).astype(np.float64)
+
+        w = _mm.power_weights(S, pp)            # (npix, K)
+        if domain_mask:
+            w[~(np.nan_to_num(dom, nan=-np.inf) >= dthr)] = np.nan
+
+        out = np.full((T, npix), np.nan, dtype=np.float32)
+        for t in range(T):
+            Xt = X_all[t]
+            Xt = np.where(np.isfinite(Xt) & (np.abs(Xt) <= max_f32), Xt, np.nan)
+            valid = ~np.isnan(Xt).any(axis=1)
+            if valid.any():
+                Xv = Xt[valid].astype(np.float64)
+                link = Xv @ coef.T + bias
+                preds = np.clip(link, 0.0, None) ** inv_lam
+                out[t, valid] = _mm.blend(preds, w[valid]).astype(np.float32)
+                del Xv, link, preds
+            del Xt, valid
+        del X_all, S, w
+        return out.reshape((T,) + grid)
+
+    feat_das = [func_dict[v](dat) for v in model_vars]
+    sim_das = [sim.isel(model=i) for i in range(K + 1)]
+    return xr.apply_ufunc(
+        pred_func,
+        *feat_das, *sim_das,
+        dask='parallelized',
+        vectorize=False,
+        input_core_dims=[['time', 'y', 'x']] * 28 + [['y', 'x']] * (K + 1),
+        output_core_dims=[['time', 'y', 'x']],
+        output_dtypes=['float32'],
+    )
 
 
 _ABSENT = object()
