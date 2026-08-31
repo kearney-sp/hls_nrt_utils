@@ -11,7 +11,11 @@ model_dict = {
     'ffar_ok_wy_biomass': resource_filename('hlsstack', 'models/FFAR_OK_WY_HLS_to_VOR_biomass_model_pls_20260522.pk'),
     'cper_cover_old': resource_filename('hlsstack', 'models/CPER_HLS_to_LPI_cover_pls_binned_model.pk'),
     'cper_biomass_old_lm': resource_filename('hlsstack', 'models/CPER_HLS_to_VOR_biomass_model_lr_simp.pk'),
-    'cper_biomass_old_pls': resource_filename('hlsstack', 'models/CPER_HLS_to_VOR_biomass_model_pls_20241015.pk')
+    'cper_biomass_old_pls': resource_filename('hlsstack', 'models/CPER_HLS_to_VOR_biomass_model_pls_20241015.pk'),
+    # mmodel_sel embedding-p=2 five-model biomass blend, distilled to a plain
+    # dict of numpy arrays (no mmodel_sel/sklearn classes) by mmodel_sel stage I.
+    # Consumed by hls_funcs.predict.pred_bm_mmodel.
+    'mmodel_biomass': resource_filename('hlsstack', 'models/mmodel_biomass_bundle_20260831.pk'),
 }
 
 def load_model(model_name):
