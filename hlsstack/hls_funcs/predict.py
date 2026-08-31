@@ -7,6 +7,7 @@ import xarray as xr
 import numpy as np
 import random
 import rioxarray  # noqa: F401 -- registers the .rio accessor used by pred_bm_mmodel
+from rasterio.warp import transform_bounds
 from pkg_resources import resource_filename
 from hlsstack.hls_funcs.bands import *
 from hlsstack.hls_funcs.indices import *
@@ -187,11 +188,21 @@ def _prepare_similarity(dat, bundle, similarity, embedding):
                     'or pass `similarity=<path>` / `embedding=<64-band raster>`.'
                     % path
                 )
-        raw = rioxarray.open_rasterio(path)
+        raw = rioxarray.open_rasterio(path, lock=False)
         if raw.rio.crs is None:
             raise ValueError('similarity raster %r has no CRS' % path)
-        raw = raw.where(raw != _MMODEL_SIM_NODATA)
-        if np.nanmax(np.abs(raw.values)) > 1.5:      # int16-scaled cosines
+        # Window the source to `ref`'s footprint BEFORE loading it. A CONUS
+        # similarity stack at 300 m is ~1.2e9 px; raw.where() below casts
+        # int16 -> float64 (~9.6 GB) over the whole array and np.abs(.values)
+        # copies it again, which OOMs a map_blocks worker. `ref` only needs its
+        # own tile footprint (~0.04% of CONUS). open_rasterio reads lazily, so
+        # clip_box is a windowed read. Harmless (slightly faster) for the
+        # coarse 2 km stack.
+        src_bounds = transform_bounds(ref.rio.crs, raw.rio.crs, *ref.rio.bounds())
+        raw = raw.rio.clip_box(*src_bounds, auto_expand=True)
+        scaled = np.issubdtype(raw.dtype, np.integer)   # int16-scaled cosines
+        raw = raw.where(raw != _MMODEL_SIM_NODATA).astype('float32')
+        if scaled or np.nanmax(np.abs(raw.values)) > 1.5:
             raw = raw / _MMODEL_SIM_SCALE
         raw = raw.rio.reproject_match(ref)
         if raw.sizes['band'] == len(keys):           # no domain band -> synthesize
