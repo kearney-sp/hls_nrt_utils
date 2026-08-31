@@ -31,7 +31,7 @@ distilled to coefficient vectors in `models/mmodel_biomass_bundle_<date>.pk`
 
 **Embeddings.** The blend weights need only five cosine values per pixel. By
 default `pred_bm_mmodel` reads a coarse CONUS 6-band raster shipped as package
-data (`models/mmodel_similarity_conus_2km.tif`: five model-cosine bands plus a
+data (`models/mmodel_sel_similarity_stack_2000m.tif`: five model-cosine bands plus a
 nearest-training-neighbour `domain` band, cosine × 1e4 as int16, EPSG:5070) and
 `reproject_match`es it to `dat`'s grid. Overrides:
 

@@ -115,7 +115,7 @@ def pred_bm(dat, model):
 #: default bundled similarity raster (6 bands: 5 model cosines + domain), written
 #: by mmodel_sel `scripts/b_embeddings.py --steps export --stack` and shipped as
 #: package data. int16, cosine * 1e4, nodata -32768, EPSG:5070.
-_MMODEL_SIMILARITY_COG = 'models/mmodel_similarity_conus_2km.tif'
+_MMODEL_SIMILARITY_COG = 'models/mmodel_sel_similarity_stack_2000m.tif'
 _MMODEL_SIM_SCALE = 1e4
 _MMODEL_SIM_NODATA = -32768
 
