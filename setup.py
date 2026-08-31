@@ -6,7 +6,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
 setup(name='hls_nrt_utils',
-      version='0.1.0',
+      version='0.1.1',
       description='PIP-installable utilities for performing near-real-time analyses using Harmonized Landsat-Sentinel dataset.',
       author='Sean Patrick Kearney',
       author_email='sean.patrick@hotmail.com',

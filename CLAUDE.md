@@ -45,8 +45,9 @@ Four top-level packages under `hlsstack/`: `hls_funcs/`, `models/`, `utils/`, `o
 ```
 hls_funcs/bands.py    (leaf: numpy/xarray only)
 hls_funcs/indices.py  (leaf: numpy only)
-hls_funcs/mmodel.py   (leaf: numpy + joblib only; vendored mmodel_sel weight kernel,
-                       bundle loader, embedding->cosine helper for pred_bm_mmodel)
+hls_funcs/mmodel.py   (leaf: numpy + joblib only; vendored mmodel_sel weight kernel
+                       + SEP kernel, bundle loader, embedding->cosine helper for
+                       pred_bm_mmodel / pred_bm_mmodel_se)
 hls_funcs/fetch.py    (leaf: STAC query + lazy stackstac build; no internal deps)
 hls_funcs/smooth.py, smooth_new.py   (leaf: temporal smoothing; no internal deps)
 models/load.py        (leaf: model_dict registry + load_model())
@@ -79,6 +80,7 @@ Practical rule when adding code: `bands.py`/`indices.py` must stay leaves (no im
 - Model-loading convention: current code (`pred_bm`, `pred_cov`, `pred_cp`) takes an already-loaded `model` object as a parameter and closure-captures it into `apply_ufunc`/`map_blocks`. Only the legacy `pred_cp_old` reloads the model per-call via a deferred `models.load.load_model` import (worked around historical cross-process deserialization errors) — don't copy that pattern into new code; load once and pass the model in.
 - Model registry: add new `.pk`/`.pkl` models to `models/load.py::model_dict` only — never hardcode a model path elsewhere in the codebase.
 - `pred_bm_mmodel` is the odd one out: its `'mmodel_biomass'` registry entry is a plain dict of numpy arrays (no sklearn estimator, no `feature_names_in_`), and it also ships a package-data raster `models/mmodel_sel_similarity_stack_2000m.tif`. Both are regenerated from the `mmodel_sel` project — the bundle by its `scripts/i_export_mmodel_bundle.py`, the raster by its `scripts/b_embeddings.py --steps export --stack`. Don't point other prediction paths at `'mmodel_biomass'`.
+- `pred_bm_mmodel_se` gives the per-pixel standard error of prediction for that blend (the `pred_bm`/`pred_bm_se` split, mirrored). It needs a `sep` block in the bundle (`format_version` 2, from `mmodel_sel/scripts/i_sep_calibrate.py`) and raises on a v1 bundle. `mmodel.blend_predictive_sd` is the vendored SEP kernel; re-vendor it (and bump the `@ <sha>` comment) if `mmodel_sel/src/mmodel_sel/sep.py` changes, same as the weight kernel.
 
 ## State management & logging
 - No `logging` module anywhere in the library except one branch in `hpc_setup.py` (debug mode); all status/progress is `print()`. Match this — don't introduce a logging framework into `hlsstack`.
