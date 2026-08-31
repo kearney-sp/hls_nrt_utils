@@ -115,7 +115,7 @@ def pred_bm(dat, model):
 #: default bundled similarity raster (6 bands: 5 model cosines + domain), written
 #: by mmodel_sel `scripts/b_embeddings.py --steps export --stack` and shipped as
 #: package data. int16, cosine * 1e4, nodata -32768, EPSG:5070.
-_MMODEL_SIMILARITY_COG = 'models/mmodel_similarity_conus_2km.tif'
+_MMODEL_SIMILARITY_COG = 'models/mmodel_sel_similarity_stack_2000m.tif'
 _MMODEL_SIM_SCALE = 1e4
 _MMODEL_SIM_NODATA = -32768
 
@@ -300,6 +300,110 @@ def pred_bm_mmodel(dat, model, similarity=None, embedding=None, p=None,
                 preds = np.clip(link, 0.0, None) ** inv_lam
                 out[t, valid] = _mm.blend(preds, w[valid]).astype(np.float32)
                 del Xv, link, preds
+            del Xt, valid
+        del X_all, S, w
+        return out.reshape((T,) + grid)
+
+    feat_das = [func_dict[v](dat) for v in model_vars]
+    sim_das = [sim.isel(model=i) for i in range(K + 1)]
+    return xr.apply_ufunc(
+        pred_func,
+        *feat_das, *sim_das,
+        dask='parallelized',
+        vectorize=False,
+        input_core_dims=[['time', 'y', 'x']] * 28 + [['y', 'x']] * (K + 1),
+        output_core_dims=[['time', 'y', 'x']],
+        output_dtypes=['float32'],
+    )
+
+
+def pred_bm_mmodel_se(dat, model, similarity=None, embedding=None, p=None,
+                      domain_mask=True, domain_threshold=None):
+    """Per-pixel standard error of prediction for :func:`pred_bm_mmodel`.
+
+    The mmodel analogue of :func:`pred_bm_se`: same call signature and same
+    single-``DataArray`` return as :func:`pred_bm_mmodel`, but the value is the
+    SEP (kg/ha) of the p=2 blend rather than the blend itself. The pair
+    ``(pred_bm_mmodel, pred_bm_mmodel_se)`` feeds :func:`pred_bm_thresh`
+    unchanged.
+
+    Needs a ``sep`` block in ``model`` (bundle ``format_version`` 2, written by
+    mmodel_sel ``scripts/i_sep_calibrate.py``); raises otherwise. The SEP is
+    ``sqrt(p*A + q*B + b*V_select + k2*ybar**2 + f0**2)`` -- within-model
+    residual through the square back-transform + between-model disagreement + a
+    calibrated transfer floor (see :func:`hlsstack.hls_funcs.mmodel.blend_predictive_sd`).
+    It is a spread about the biased-low median prediction, not a full
+    parameter-uncertainty interval and not a bias correction.
+
+    Parameters are as :func:`pred_bm_mmodel` -- ``similarity`` / ``embedding``
+    select the cosine raster, ``p`` overrides the weight exponent, and
+    ``domain_mask`` / ``domain_threshold`` null the same out-of-domain pixels the
+    point model nulls (so the two rasters share a footprint).
+
+    Returns
+    -------
+    xr.DataArray
+        ``(time, y, x)`` float32, kg/ha, NaN where unpredictable or out of domain.
+    """
+    bundle = _mm.load_mmodel_bundle(model)
+    if 'sep' not in bundle:
+        raise ValueError(
+            'pred_bm_mmodel_se: bundle has no `sep` block (format_version %s). '
+            'Regenerate it with mmodel_sel scripts/i_sep_calibrate.py then '
+            'scripts/i_export_mmodel_bundle.py.' % bundle.get('format_version'))
+    if float(bundle['lambda_boxcox']) != 0.5:
+        raise ValueError('pred_bm_mmodel_se assumes a sqrt target (lambda_boxcox '
+                         '0.5); bundle has %s' % bundle['lambda_boxcox'])
+
+    keys = list(bundle['model_keys'])
+    K = len(keys)
+    model_vars = list(bundle['feature_names'])
+    missing = set(model_vars) - set(func_dict)
+    if missing:
+        raise KeyError('pred_bm_mmodel_se: no index function for %s' % sorted(missing))
+
+    if not isinstance(domain_mask, bool) and isinstance(domain_mask, (int, float)):
+        domain_threshold = float(domain_mask)
+        domain_mask = True
+    dthr = float(bundle['domain_similarity_threshold']
+                 if domain_threshold is None else domain_threshold)
+    pp = float(bundle['weight_p'] if p is None else p)
+    coef = bundle['coef']                       # (K, 28)
+    bias = bundle['intercept']                  # (K,)
+
+    s = bundle['sep']
+    sig = s['sigma_link']                       # (K,)
+    s_p, s_q, s_b, s_k2, s_f0 = s['p'], s['q'], s['b'], s['k2'], s['f0']
+
+    sim = _prepare_similarity(dat, bundle, similarity, embedding)
+
+    def pred_func(*args):
+        feats, sims = args[:28], args[28:]      # sims: K cosine bands + domain
+        grid = feats[0].shape[1:]
+        T = feats[0].shape[0]
+        npix = int(np.prod(grid))
+        max_f32 = np.finfo(np.float32).max
+
+        X_all = np.stack([a.reshape(a.shape[0], -1) for a in feats], axis=-1).astype(np.float32)
+        S = np.stack([np.asarray(v).reshape(-1) for v in sims[:K]], axis=-1).astype(np.float64)
+        dom = np.asarray(sims[K]).reshape(-1).astype(np.float64)
+
+        w = _mm.power_weights(S, pp)            # (npix, K)
+        if domain_mask:
+            w[~(np.nan_to_num(dom, nan=-np.inf) >= dthr)] = np.nan
+
+        out = np.full((T, npix), np.nan, dtype=np.float32)
+        for t in range(T):
+            Xt = X_all[t]
+            Xt = np.where(np.isfinite(Xt) & (np.abs(Xt) <= max_f32), Xt, np.nan)
+            valid = ~np.isnan(Xt).any(axis=1)
+            if valid.any():
+                Xv = Xt[valid].astype(np.float64)
+                g = np.clip(Xv @ coef.T + bias, 0.0, None)     # link members
+                out[t, valid] = _mm.blend_predictive_sd(
+                    g, w[valid], sig, s_p, s_q, s_b, s_k2, s_f0
+                ).astype(np.float32)
+                del Xv, g
             del Xt, valid
         del X_all, S, w
         return out.reshape((T,) + grid)

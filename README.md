@@ -31,7 +31,7 @@ distilled to coefficient vectors in `models/mmodel_biomass_bundle_<date>.pk`
 
 **Embeddings.** The blend weights need only five cosine values per pixel. By
 default `pred_bm_mmodel` reads a coarse CONUS 6-band raster shipped as package
-data (`models/mmodel_similarity_conus_2km.tif`: five model-cosine bands plus a
+data (`models/mmodel_sel_similarity_stack_2000m.tif`: five model-cosine bands plus a
 nearest-training-neighbour `domain` band, cosine × 1e4 as int16, EPSG:5070) and
 `reproject_match`es it to `dat`'s grid. Overrides:
 
@@ -49,3 +49,37 @@ to either as a shortcut, or `domain_mask=False` to fill everywhere.
 **Invocation.** Like `pred_bm`, use `ds.map_blocks(...)`; a direct call needs
 `time` as a single chunk (`ds.chunk({'time': -1})`). Output is `float32` (NaN
 preserved) — give `map_blocks` a `float32` template.
+
+### Standard error of prediction — `pred_bm_mmodel_se`
+
+`pred_bm_mmodel_se(dat, model, ...)` is the mmodel analogue of `pred_bm_se`: same
+call signature and same single-`DataArray` return as `pred_bm_mmodel`, but the
+value is the **per-pixel standard error of prediction** (kg/ha) of the blend. The
+pair `(pred_bm_mmodel, pred_bm_mmodel_se)` feeds `pred_bm_thresh` unchanged.
+
+```python
+from hlsstack.hls_funcs.predict import pred_bm_mmodel_se
+
+xr_se = ds.map_blocks(
+    pred_bm_mmodel_se,
+    template=ds['NIR1'].astype('float32'),
+    kwargs=dict(model=bundle),
+).where(ds['NIR1'].notnull())
+```
+
+Needs a `sep` block in the bundle (`format_version` 2, written by
+`mmodel_sel/scripts/i_sep_calibrate.py`); a v1 bundle raises. The SEP is
+
+```
+sqrt( p·A + q·B + b·V_select + k2·ȳ² + f0² )
+```
+
+— within-model residual propagated through the square back-transform, plus
+between-model disagreement, plus a calibrated transfer floor
+(`hls_funcs.mmodel.blend_predictive_sd`). It is a spread about the blend's
+biased-low median (the point prediction), **not** a bias correction and not a
+full parameter-uncertainty interval — the local PLS fits carry no coefficient
+covariance. `similarity` / `embedding` / `p` / `domain_mask` / `domain_threshold`
+behave exactly as in `pred_bm_mmodel`, so the two rasters share a footprint.
+Calibrated coverage on `mmodel_sel`'s 64-row locked producer tier is 0.70 / 0.94
+against a 0.68 / 0.95 target.

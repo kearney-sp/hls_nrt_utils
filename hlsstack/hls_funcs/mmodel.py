@@ -11,10 +11,15 @@ mmodel_sel** at runtime:
   ``w_i ∝ (cos_i - row-min cos)^p`` renormalized, so the least-similar model gets
   exactly zero weight. If mmodel_sel's kernel changes, re-vendor here and
   regenerate the bundle (mmodel_sel stage I).
+* ``blend_predictive_sd`` -- the per-pixel standard error of prediction for the
+  blend, vendored from ``mmodel_sel/src/mmodel_sel/sep.py`` @ ed25177bde20
+  (2026-08-31). Consumed by ``pred_bm_mmodel_se``; needs a ``sep`` block in the
+  bundle (``format_version`` 2).
 * ``load_mmodel_bundle`` -- read + validate the distilled bundle
   (``models/mmodel_biomass_bundle_*.pk``): a plain dict of numpy arrays, no
   mmodel_sel or sklearn classes. Registered in ``models/load.py`` as
-  ``'mmodel_biomass'``.
+  ``'mmodel_biomass'``. ``format_version`` 1 is a point-estimate bundle; 2 adds
+  the ``sep`` block.
 * ``cosine_from_embedding`` -- cosine similarity of a 64-band annual embedding
   raster to each model's training-footprint mean vector, plus the
   nearest-training-neighbour domain similarity. Only needed for the
@@ -66,6 +71,51 @@ def blend(preds, w):
     return np.where(total > 0, out, np.nan)
 
 
+# --------------------------------------------------------------- standard error
+# Vendored from mmodel_sel/src/mmodel_sel/sep.py @ ed25177bde20.
+
+
+def blend_predictive_sd(g, w, sigma, p, q, b, k2, f0):
+    """Per-row standard error of prediction (kg/ha) for the p=2 blend.
+
+    ``SEP = sqrt(p*A + q*B + b*V_select + k2*ybar**2 + f0**2)`` -- within-model
+    residual propagated through the square back-transform by the delta method
+    (``d ybar / d eta_i = 2 w_i g_i``), plus between-model disagreement, plus a
+    calibrated transfer floor.
+
+    Parameters
+    ----------
+    g : ndarray ``(n, K)``
+        Non-negative link-scale member predictions, i.e. ``clip(X @ coef.T +
+        intercept, 0)`` (equivalently ``sqrt`` of the kg/ha members).
+    w : ndarray ``(n, K)``
+        Blend weights (rows sum to 1; NaN where a model is unusable).
+    sigma : ndarray ``(K,)``
+        Per-model out-of-fold link-scale residual SD (bundle ``sep['sigma_link']``).
+    p, q, b, k2, f0 : float
+        Calibrated coefficients (bundle ``sep`` block).
+
+    It is a residual + model-disagreement error with a calibrated transfer
+    floor, not a full parameter-uncertainty interval, and it is a spread about
+    the blend's biased-low conditional median (the point prediction), not the
+    mean.
+    """
+    g = np.asarray(g, dtype=np.float64)
+    w = np.asarray(w, dtype=np.float64)
+    sigma = np.asarray(sigma, dtype=np.float64)
+    wv = np.where(np.isfinite(w), w, 0.0)
+
+    yhat = g ** 2
+    ybar = np.sum(wv * yhat, axis=1)
+    js = (2.0 * wv * g) * sigma                       # J_i * sigma_i
+    A = np.sum(js ** 2, axis=1)
+    B = np.sum(js, axis=1) ** 2
+    v_select = np.sum(wv * (yhat - ybar[:, None]) ** 2, axis=1)
+
+    var = p * A + q * B + b * v_select + k2 * ybar ** 2 + float(f0) ** 2
+    return np.sqrt(np.clip(var, 0.0, None))
+
+
 # ---------------------------------------------------------------------- bundle
 
 
@@ -98,6 +148,22 @@ def load_mmodel_bundle(path):
     b["mu_years"] = np.asarray(b["mu_years"], dtype=np.float64)
     b["mu_year_mask"] = np.asarray(b["mu_year_mask"], dtype=bool)
     b["train_embedding"] = np.asarray(b["train_embedding"], dtype=np.float64)
+    if "link_resid_sd" in b:
+        b["link_resid_sd"] = np.asarray(b["link_resid_sd"], dtype=np.float64)
+    if "n_train" in b:
+        b["n_train"] = np.asarray(b["n_train"], dtype=np.int64)
+
+    # format_version 2: the standard-error-of-prediction block (mmodel_sel
+    # scripts/i_sep_calibrate.py). Consumed by pred_bm_mmodel_se.
+    if "sep" in b:
+        s = dict(b["sep"])
+        sig = np.asarray(s["sigma_link"], dtype=np.float64)
+        if sig.shape != (k,):
+            raise ValueError(f"bundle sep sigma_link shape {sig.shape}, expected ({k},)")
+        s["sigma_link"] = sig
+        for key in ("p", "q", "b", "k2", "f0"):
+            s[key] = float(s[key])
+        b["sep"] = s
     return b
 
 
