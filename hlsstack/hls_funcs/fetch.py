@@ -1,7 +1,6 @@
 import requests as r
 import os
-from netrc import netrc
-from subprocess import Popen
+from netrc import netrc, NetrcParseError
 import stackstac
 from datetime import datetime, timedelta
 import numpy as np
@@ -372,8 +371,10 @@ def HLS_CMR_STAC(hls_data, bbox_latlon, lim=100, aws=False, debug=False):
 
 def setup_netrc(creds, aws=False):
     """
-    Setup the credentials for querying the LPCLOUD DAAC stac. Creates a .netrc file which contains the
-    Earthdata username and password. Register at https://urs.earthdata.nasa.gov/
+    Ensure ~/.netrc carries an Earthdata (urs.earthdata.nasa.gov) entry for
+    querying the LPCLOUD DAAC stac, appending one from `creds` only if absent
+    (idempotent -- safe to call repeatedly and concurrently).
+    Register at https://urs.earthdata.nasa.gov/
     Also see
     https://www.earthdata.nasa.gov/eosdis/science-system-description/eosdis-components/earthdata-login
     
@@ -392,33 +393,33 @@ def setup_netrc(creds, aws=False):
         Dictionary with tempoary 'secretAccessKey', 'accessKeyId', and 'sessionToken' for the S3 bucket
     
     """
-    urs = 'urs.earthdata.nasa.gov' 
-    try:
-        netrcDir = os.path.expanduser("~/.netrc")
-        netrc(netrcDir).authenticators(urs)[0]
-        del netrcDir
+    urs = 'urs.earthdata.nasa.gov'
+    netrc_path = os.path.expanduser('~/.netrc')
 
-    # Below, create a netrc file and prompt user for NASA Earthdata Login Username and Password
-    except FileNotFoundError:
-        homeDir = os.path.expanduser("~")
-        Popen('touch {0}.netrc | chmod og-rw {0}.netrc | echo machine {1} >> {0}.netrc'.format(
-            homeDir + os.sep, urs), shell=True)
-        Popen('echo login {} >> {}.netrc'.format(creds[0], homeDir + os.sep), shell=True)
-        Popen('echo password {} >> {}.netrc'.format(creds[1], homeDir + os.sep), shell=True)
-        del homeDir
+    # Is there already a usable urs.earthdata.nasa.gov entry?
+    have_entry = False
+    if os.path.exists(netrc_path):
+        try:
+            have_entry = netrc(netrc_path).authenticators(urs) is not None
+        except (NetrcParseError, TypeError):
+            have_entry = False
 
-    # Determine OS and edit netrc file if it exists but is not set up for NASA Earthdata Login
-    except TypeError:
-        homeDir = os.path.expanduser("~")
-        Popen('echo machine {1} >> {0}.netrc'.format(homeDir + os.sep, urs), shell=True)
-        Popen('echo login {} >> {}.netrc'.format(creds[0], homeDir + os.sep), shell=True)
-        Popen('echo password {} >> {}.netrc'.format(creds[1], homeDir + os.sep), shell=True)
-        del homeDir
-    del urs
+    # Only touch ~/.netrc if it's actually missing the entry. The previous
+    # implementation fired three un-awaited `Popen(..., shell=True)` appends on
+    # every call, so repeated runs duplicated `machine/login/password` lines and
+    # raced each other; a synchronous, idempotent append fixes both.
+    if not have_entry:
+        if not creds or len(creds) < 2:
+            raise ValueError(
+                'No {} entry in {} and no creds=[username, password] provided'.format(
+                    urs, netrc_path))
+        with open(netrc_path, 'a') as fh:
+            fh.write('\nmachine {} login {} password {}\n'.format(urs, creds[0], creds[1]))
+        os.chmod(netrc_path, 0o600)
+
     if aws:
-        return(r.get('https://lpdaac.earthdata.nasa.gov/s3credentials').json())
-    else:
-        return('')
+        return r.get('https://lpdaac.earthdata.nasa.gov/s3credentials').json()
+    return ''
 
     
 def build_xr(stac_dict, lut=lut, bbox=None, stack_chunks=(3660, 3660), proj_epsg=32613, bands=needed_bands):
@@ -530,6 +531,37 @@ def get_hls(hls_data={}, bbox=[517617.2187, 4514729.5, 527253.4091, 4524372.5], 
     return da
 
 
+def _cookie_env():
+    """GDAL/curl cookie-handling env vars.
+
+    Default: run curl's cookie engine in memory only -- GDAL_HTTP_COOKIEFILE=''
+    turns the engine on without reading a file, and no GDAL_HTTP_COOKIEJAR means
+    nothing is written back. The Earthdata (URS) auth-redirect cookie only has
+    to survive within a single process, so this loses nothing in practice.
+
+    Never default the jar to ~/cookies.txt: GDAL rewrites the jar on every
+    curl-handle teardown (~once per COG), so on a shared HPC filesystem many
+    concurrent Dask workers pointed at one jar in $HOME generate NFS
+    silly-rename (.nfs*) files without bound -- observed as ~777k of them in a
+    single home directory.
+
+    A persistent jar is opt-in: set GDAL_HTTP_COOKIEFILE / GDAL_HTTP_COOKIEJAR
+    (ideally to a per-process path under $TMPDIR, or override HLSSTACK_HTTP_
+    CACHE_DIR) before calling setup_env() and they are passed through untouched.
+    """
+    cache_dir = os.environ.get('HLSSTACK_HTTP_CACHE_DIR')
+    if cache_dir:
+        os.makedirs(cache_dir, exist_ok=True)
+        jar = os.path.join(cache_dir, 'hlsstack_cookies_{}.txt'.format(os.getpid()))
+        return {'GDAL_HTTP_COOKIEFILE': jar, 'GDAL_HTTP_COOKIEJAR': jar}
+
+    env = {'GDAL_HTTP_COOKIEFILE': os.environ.get('GDAL_HTTP_COOKIEFILE', '')}
+    jar = os.environ.get('GDAL_HTTP_COOKIEJAR')
+    if jar:
+        env['GDAL_HTTP_COOKIEJAR'] = jar
+    return env
+
+
 def setup_env(aws=False, creds=[]):
     #define gdalenv
     if aws:
@@ -547,14 +579,13 @@ def setup_env(aws=False, creds=[]):
                    VSI_CURL_CACHE_SIZE='200000000',
                    CPL_VSIL_CURL_ALLOWED_EXTENSIONS='TIF',
                    GDAL_HTTP_UNSAFESSL='YES',
-                   GDAL_HTTP_COOKIEFILE=os.path.expanduser('~/cookies.txt'),
-                   GDAL_HTTP_COOKIEJAR=os.path.expanduser('~/cookies.txt'),
                    AWS_REGION='us-west-2',
                    AWS_SECRET_ACCESS_KEY=s3_cred['secretAccessKey'],
                    AWS_ACCESS_KEY_ID=s3_cred['accessKeyId'],
                    AWS_SESSION_TOKEN=s3_cred['sessionToken'],
                    AWS_REQUEST_PAYER='requester',
-                   CURL_CA_BUNDLE=certifi.where())
+                   CURL_CA_BUNDLE=certifi.where(),
+                   **_cookie_env())
         #session = boto3.Session(aws_access_key_id=s3_cred['accessKeyId'], 
         #                aws_secret_access_key=s3_cred['secretAccessKey'],
         #                aws_session_token=s3_cred['sessionToken'],
@@ -574,9 +605,8 @@ def setup_env(aws=False, creds=[]):
                    GDAL_MAX_RAW_BLOCK_CACHE_SIZE='200000000',
                    GDAL_SWATH_SIZE='200000000',
                    VSI_CURL_CACHE_SIZE='200000000',
-                   GDAL_HTTP_COOKIEFILE=os.path.expanduser('~/cookies.txt'),
-                   GDAL_HTTP_COOKIEJAR=os.path.expanduser('~/cookies.txt'),
-                   CURL_CA_BUNDLE=certifi.where())
-    
+                   CURL_CA_BUNDLE=certifi.where(),
+                   **_cookie_env())
+
     os.environ.update(env)
     
