@@ -121,6 +121,57 @@ def _assets_from_cmr_metadata(item, debug=False):
     return assets
 
 
+def _paginate_cmr_stac(url, lim, coll_key, debug=False):
+    """Fetch every page of a CMR-STAC search by following the response's own
+    `links[rel="next"]` cursor, instead of re-deriving a date cursor from the
+    last item's timestamp.
+
+    The date-advance scheme this replaces (HLS_CMR_STAC used to re-query
+    starting at `items[-1].date + 1`) silently drops granules whenever a
+    single day's results span a 100-item page boundary: advancing to the
+    next day skips whatever sat past item 100 in the day still in progress,
+    and nothing checks whether more results existed. It reproduces
+    deterministically -- the page advance is deterministic, so re-running the
+    same query truncates the same way every time. CMR's own cursor has no
+    such blind spot: following it until it stops, then checking the count
+    against `context.matched`, catches exactly this.
+
+    Stops when a page comes back with a `next` link (all results collected)
+    or when `lim` results have been collected (the caller's own ceiling, not
+    a page boundary -- not checked against `matched`). Raises if pagination
+    ran out on its own before matching `context.matched`, since that gap is
+    the truncation bug this replaces, not a transient error.
+    """
+    items = []
+    matched = None
+    next_url = url
+    while next_url is not None:
+        if debug:
+            print(next_url)
+        resp = r.get(next_url).json()
+        feats = resp.get('features', [])
+        if matched is None:
+            matched = resp.get('context', {}).get('matched')
+        items.extend(feats)
+        if not feats:
+            return items
+        if len(items) >= lim:
+            if debug and matched is not None and len(items) < matched:
+                print('   {}: stopping at lim={}, {} more matched result(s) '
+                      'exist.'.format(coll_key, lim, matched - len(items)))
+            return items
+        next_url = next(
+            (l['href'] for l in resp.get('links', []) if l.get('rel') == 'next'),
+            None)
+    if matched is not None and len(items) != matched:
+        raise RuntimeError(
+            'CMR-STAC pagination for {} fetched {} item(s) but the search '
+            'reports context.matched={} -- pagination stopped (no more '
+            '`next` link) before collecting everything the search itself '
+            'says exists.'.format(coll_key, len(items), matched))
+    return items
+
+
 def _repair_bandless(items, base_query, coll_key, debug=False):
     """Restore band assets to any item CMR returned without them.
 
@@ -227,103 +278,14 @@ def HLS_CMR_STAC(hls_data, bbox_latlon, lim=100, aws=False, debug=False):
     search_query3_s30 = f"{search_query2_s30}&datetime={date_time}"  
     search_query3_l30 = f"{search_query2_l30}&datetime={date_time}"
 
-    # create empty lists to store results
-    s30_items = list()
-    l30_items = list()
+    # Page each collection independently by following CMR's own cursor
+    # (`links[rel="next"]`) rather than re-deriving one from the last item's
+    # date -- see _paginate_cmr_stac for why the old date-advance scheme lost
+    # granules. `lim` still caps the total fetched per collection; it is no
+    # longer what decides how many pages to ask for.
+    s30_items = _paginate_cmr_stac(search_query3_s30, lim, 'HLSS30', debug)
+    l30_items = _paginate_cmr_stac(search_query3_l30, lim, 'HLSL30', debug)
 
-    # set to initially search both S30 and L30
-    skip_s30 = False
-    skip_l30 = False
-    
-    if lim > 100:
-        # repeat search multiple times, limiting each search to 100 results
-        for i in range(int(np.ceil(lim/100))):
-            if i > 10:
-                print('WARNING: Fetching more than 1000 records, this may result in a very large dataset.')
-            
-            if not skip_s30:
-                if debug:
-                    # print the current queries if debugging
-                    print(search_query3_s30)
-                # get just the features from the current query
-                features_s30 = r.get(search_query3_s30).json()['features']
-                
-            else:
-                features_s30 = []
-            if not skip_l30:
-                if debug:
-                    # print the current queries if debugging
-                    print(search_query3_l30)
-                # get just the features from the current query
-                features_l30 = r.get(search_query3_l30).json()['features']  
-            else:
-                features_l30 = []
-        
-            if (len(features_s30) + len(features_l30)) == 0:
-                # stop searching if no results are found
-                break 
-            else:
-                # append all features from current query to the running list
-                s30_items = s30_items + [h for h in features_s30] 
-                l30_items = l30_items + [h for h in features_l30]
-                
-                if (len(s30_items) > 0) and (len(l30_items) > 0):
-                    # get the date of the latest image in the current query results from both collections
-                    start_time = str(
-                        max(datetime.strptime(s30_items[-1]['properties']['datetime'].split('T')[0],
-                                              '%Y-%m-%d'),
-                            datetime.strptime(l30_items[-1]['properties']['datetime'].split('T')[0], 
-                                              '%Y-%m-%d')).date() + timedelta(days=1))
-                    # save in case needed, but should be overwritten below
-                    start_time_s30 = start_time
-                    start_time_l30 = start_time
-                else:
-                    # stop searching if no results are found
-                    break 
-                if len(s30_items) > 0:
-                    # get the date of the latest image in the current query results from the S30 collection
-                    start_time_s30 = str(
-                        datetime.strptime(s30_items[-1]['properties']['datetime'].split('T')[0], 
-                                          '%Y-%m-%d').date() + timedelta(days=1))
-                if len(l30_items) > 0:
-                    # get the date of the latest image in the current query results from the L30 collection
-                    start_time_l30 = str(
-                        datetime.strptime(l30_items[-1]['properties']['datetime'].split('T')[0], 
-                                          '%Y-%m-%d').date() + timedelta(days=1))
-                
-                if start_time_s30 == hls_data['date_range'][1]:
-                    skip_s30 = True
-                    if debug:
-                        print('Skipping further search of S30 - latest date matches end of search date range.')
-                if start_time_l30 == hls_data['date_range'][1]:
-                    skip_l30 = True
-                    if debug:
-                        print('Skipping further search of L30 - latest date matches end of search date range.')
-
-                if skip_s30 and skip_l30:
-                    # stop searching if both S30 and L30 are at end of date range
-                    break
-                else:
-                    # update query with new start time 
-                    date_time_s30 = start_time_s30 + 'T00:00:00Z' + '/' + hls_data['date_range'][1] + 'T00:00:00Z'
-                    date_time_l30 = start_time_l30 + 'T00:00:00Z' + '/' + hls_data['date_range'][1] + 'T00:00:00Z'
-                    search_query3_s30 = f"{search_query2_s30}&datetime={date_time_s30}"  
-                    search_query3_l30 = f"{search_query2_l30}&datetime={date_time_l30}" 
-            
-    else:
-        # use for a single query when lim <= 100
-        if debug:
-            # print the queries if debugging
-            print(search_query3_s30)
-            print(search_query3_l30)
-        # get just the features from the query
-        features_s30 = r.get(search_query3_s30).json()['features']
-        features_l30 = r.get(search_query3_l30).json()['features'] 
-        
-        # append all features from query to the running list
-        s30_items = s30_items + [h for h in features_s30]  
-        l30_items = l30_items + [h for h in features_l30]
-    
     # Repair granules CMR returned without their band assets. A broad search
     # can come back with `assets: {'metadata': ...}` only -- no B02/B03/.../
     # Fmask -- for a granule that a narrower search returns complete. It is
