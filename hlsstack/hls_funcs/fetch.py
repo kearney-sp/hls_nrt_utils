@@ -1,5 +1,6 @@
 import requests as r
 import os
+import time
 from netrc import netrc, NetrcParseError
 import stackstac
 from datetime import datetime, timedelta
@@ -121,6 +122,46 @@ def _assets_from_cmr_metadata(item, debug=False):
     return assets
 
 
+def _get_cmr_stac_page(url, coll_key, max_tries=6, retry_delay=5):
+    """GET one CMR-STAC page, retrying until it is a real result page.
+
+    CMR-STAC intermittently answers HTTP 500 with a JSON body of
+    `{'errors': ['Oops! Something has gone wrong...']}` -- measured on
+    T13TEF's 2025 window in Oct 2026 at 8 of 40 page requests, each failing
+    after ~29s, so all 8 back-to-back full searches came back short (0 to
+    1200 of 1627 S30 items). That body parses fine and has
+    no `features`, so read as `.get('features', [])` it is indistinguishable
+    from the empty page that ends a search: pagination stopped there and
+    returned whatever pages had arrived, with no error and no check against
+    `context.matched`. Which page failed varied run to run, so the same
+    search lost a different number of dates each time.
+
+    Retrying the same url is safe: CMR's `next` link carries its search-after
+    cursor in the url itself, so re-requesting a page is idempotent. Raises
+    after `max_tries`, so the caller's own retry restarts the whole search
+    rather than accepting a short result.
+    """
+    for attempt in range(1, max_tries + 1):
+        try:
+            resp = r.get(url, timeout=120)
+            body = resp.json()
+        except Exception as exc:
+            why = repr(exc)
+        else:
+            if resp.status_code == 200 and 'features' in body:
+                return body
+            why = 'HTTP {}: {}'.format(
+                resp.status_code,
+                body.get('errors', body) if isinstance(body, dict) else body)
+        if attempt < max_tries:
+            print('   CMR-STAC {} page failed ({}); retrying in {}s '
+                  '(attempt {}/{})'.format(coll_key, why, retry_delay * attempt,
+                                           attempt, max_tries))
+            time.sleep(retry_delay * attempt)
+    raise RuntimeError('CMR-STAC {} page failed {} times, last: {}'.format(
+        coll_key, max_tries, why))
+
+
 def _paginate_cmr_stac(url, lim, coll_key, debug=False):
     """Fetch every page of a CMR-STAC search by following the response's own
     `links[rel="next"]` cursor, instead of re-deriving a date cursor from the
@@ -136,11 +177,14 @@ def _paginate_cmr_stac(url, lim, coll_key, debug=False):
     such blind spot: following it until it stops, then checking the count
     against `context.matched`, catches exactly this.
 
-    Stops when a page comes back with a `next` link (all results collected)
-    or when `lim` results have been collected (the caller's own ceiling, not
-    a page boundary -- not checked against `matched`). Raises if pagination
-    ran out on its own before matching `context.matched`, since that gap is
-    the truncation bug this replaces, not a transient error.
+    Stops when a page comes back without a `next` link or empty (all results
+    collected) or when `lim` results have been collected (the caller's own
+    ceiling, not a page boundary -- not checked against `matched`, but always
+    reported, since it drops real granules). Raises if pagination ran out on
+    its own before matching `context.matched`, since that gap is the
+    truncation bug this replaces, not a transient error. Every page goes
+    through _get_cmr_stac_page, so a CMR error page can no longer pass for
+    that natural end.
     """
     items = []
     matched = None
@@ -148,17 +192,18 @@ def _paginate_cmr_stac(url, lim, coll_key, debug=False):
     while next_url is not None:
         if debug:
             print(next_url)
-        resp = r.get(next_url).json()
-        feats = resp.get('features', [])
+        resp = _get_cmr_stac_page(next_url, coll_key)
+        feats = resp['features']
         if matched is None:
             matched = resp.get('context', {}).get('matched')
         items.extend(feats)
         if not feats:
-            return items
+            break
         if len(items) >= lim:
-            if debug and matched is not None and len(items) < matched:
-                print('   {}: stopping at lim={}, {} more matched result(s) '
-                      'exist.'.format(coll_key, lim, matched - len(items)))
+            if matched is not None and len(items) < matched:
+                print('   WARNING: {}: stopping at lim={}, {} more matched '
+                      'result(s) exist and are being dropped.'.format(
+                          coll_key, lim, matched - len(items)))
             return items
         next_url = next(
             (l['href'] for l in resp.get('links', []) if l.get('rel') == 'next'),
